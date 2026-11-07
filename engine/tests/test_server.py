@@ -1,3 +1,5 @@
+import pytest
+
 """Tests for the dashboard<->engine conversion in server.py.
 
 These don't need FastAPI installed — to_engine_profile / dashboard_coherence
@@ -68,3 +70,53 @@ def test_legacy_dashboard_gpu_labels_become_real_renderer_strings():
     fp = to_engine_profile(mac).fingerprint
     assert fp.webgl_renderer.startswith("ANGLE (Apple, ANGLE Metal Renderer: Apple M1")
     assert fp.webgl_vendor == "Google Inc. (Apple)"
+
+
+def test_folder_crud_and_rename_edge_cases(tmp_path):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    from persona.server import TOKEN_HEADER, create_app
+
+    app = create_app(data_dir=str(tmp_path), start_scheduler=False)
+    client = TestClient(app, base_url="http://localhost",
+                        headers={TOKEN_HEADER: app.state.api_token})
+
+    # Check initial config has empty folders
+    r = client.get("/api/config")
+    assert r.status_code == 200
+    assert r.json()["folders"] == []
+
+    # POST /api/folders with {"name": "Alpha"} -> returns ["Alpha"]
+    r = client.post("/api/folders", json={"name": "Alpha"})
+    assert r.status_code == 200
+    assert r.json()["folders"] == ["Alpha"]
+
+    # POST /api/folders with {"name": "Beta"} -> returns ["Alpha", "Beta"]
+    r = client.post("/api/folders", json={"name": "Beta"})
+    assert r.status_code == 200
+    assert r.json()["folders"] == ["Alpha", "Beta"]
+
+    # POST /api/folders/rename with {"src": "Alpha", "dst": "AlphaRenamed"} -> returns ["AlphaRenamed", "Beta"]
+    r = client.post("/api/folders/rename", json={"src": "Alpha", "dst": "AlphaRenamed"})
+    assert r.status_code == 200
+    assert r.json()["folders"] == ["AlphaRenamed", "Beta"]
+
+    # POST /api/folders/rename with {"src": "Beta", "dst": "AlphaRenamed"} -> HTTP 409 conflict
+    r = client.post("/api/folders/rename", json={"src": "Beta", "dst": "AlphaRenamed"})
+    assert r.status_code == 409
+
+    # POST /api/folders/rename with {"src": "Same", "dst": "Same"} -> returns current folders without error
+    r = client.post("/api/folders/rename", json={"src": "Same", "dst": "Same"})
+    assert r.status_code == 200
+    assert r.json()["folders"] == ["AlphaRenamed", "Beta"]
+
+    # POST /api/folders/rename with {"src": "GhostFolder", "dst": "NewFolder"} -> returns ["AlphaRenamed", "Beta", "NewFolder"]
+    r = client.post("/api/folders/rename", json={"src": "GhostFolder", "dst": "NewFolder"})
+    assert r.status_code == 200
+    assert r.json()["folders"] == ["AlphaRenamed", "Beta", "NewFolder"]
+
+    # DELETE /api/folders/Beta -> deletes folder properly
+    r = client.delete("/api/folders/Beta")
+    assert r.status_code == 200
+    assert r.json()["folders"] == ["AlphaRenamed", "NewFolder"]

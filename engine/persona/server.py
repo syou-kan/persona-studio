@@ -682,16 +682,36 @@ def create_app(data_dir: Optional[str] = None, start_scheduler: bool = True, *,
 
     @app.post("/api/folders/rename")
     def rename_folder(body: dict):
-        src = (body.get("from") or "").strip()
-        dst = (body.get("to") or "").strip()
+        src = (body.get("src") or body.get("from") or "").strip()
+        dst = (body.get("dst") or body.get("to") or "").strip()
         if not src or not dst:
-            raise HTTPException(400, "both 'from' and 'to' are required")
+            raise HTTPException(400, "src and dst required")
+        if src == dst:
+            return {"folders": _folder_list()}
+        existing = _folder_list()
+        if dst in existing:
+            raise HTTPException(409, f"folder '{dst}' already exists")
         for p in dash.list():                       # move every profile over
             if p.get("folder") == src:
                 p["folder"] = dst
                 dash.save(p)
-        return {"folders": _persist_folders([dst if f == src else f for f in _folder_list()])}
+        if src in existing:
+            updated = [dst if f == src else f for f in existing]
+        else:
+            updated = [*existing, dst]
+        return {"folders": _persist_folders(updated)}
 
+    @app.delete("/api/folders/{name}")
+    def delete_folder_by_path(name: str, reassignTo: str = "Unfiled"):
+        name = name.strip()
+        reassign = (reassignTo or "Unfiled").strip() or "Unfiled"
+        if not name:
+            raise HTTPException(400, "folder name required")
+        for p in dash.list():
+            if p.get("folder") == name:
+                p["folder"] = reassign
+                dash.save(p)
+        return {"folders": _persist_folders([f for f in _folder_list() if f != name])}
     @app.post("/api/folders/delete")
     def delete_folder(body: dict):
         name = (body.get("name") or "").strip()

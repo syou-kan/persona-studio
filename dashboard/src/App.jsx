@@ -425,7 +425,7 @@ export default function App() {
             const cfg = await api.getConfig();
             setConfig(cfg);
             if (cfg?.default_engine) setDefaultEngine(cfg.default_engine);
-            if (Array.isArray(cfg?.folders) && cfg.folders.length) setFolders(cfg.folders);
+            if (Array.isArray(cfg?.folders)) setFolders(cfg.folders);
           } catch { /* optional */ }
           setMode("live");
         } catch { setMode("demo"); }
@@ -603,10 +603,21 @@ export default function App() {
     to = (to || "").trim();
     if (!to || to === from) return;
     if (folderList.includes(to)) { toast.info(`Folder "${to}" already exists.`); return; }
-    setFolders(f => f.map(x => x === from ? to : x));
+    setFolders(f => f.includes(from) ? f.map(x => x === from ? to : x) : [...f, to]);
     setProfiles(ps => ps.map(p => p.folder === from ? { ...p, folder: to } : p));
     if (folder === from) setFolder(to);
-    if (live) { try { const r = await api.renameFolder(from, to); if (r?.folders) setFolders(r.folders); await refresh(); } catch (e) { toast.error("Rename failed: " + e.message); } }
+    if (live) {
+      try {
+        const r = await api.renameFolder(from, to);
+        if (Array.isArray(r?.folders)) setFolders(r.folders);
+        await refresh();
+        toast.success(`Folder renamed to "${to}".`);
+      } catch (e) {
+        toast.error("Rename failed: " + e.message);
+      }
+    } else {
+      toast.success(`Folder renamed to "${to}".`);
+    }
   };
   const deleteFolder = async (name) => {
     setFolders(f => f.filter(x => x !== name));
@@ -726,8 +737,9 @@ export default function App() {
           {view === "automation" && <AutomationView profiles={profiles} live={live} refresh={refresh} />}
           {view === "folders" && (
             <FoldersView folders={folderList} profiles={profiles}
-              onOpen={(f) => { setFolder(f); setView("profiles"); }}
-              onCreate={createFolder} onRename={renameFolder} onDelete={deleteFolder} />
+              onAdd={createFolder} onRename={renameFolder} onDelete={deleteFolder}
+              onSelectFolder={f => { setFolder(f); setView("profiles"); }}
+              onBack={() => setView("profiles")} />
           )}
           {view === "settings" && (
             <SettingsView live={live} config={config} engines={engines}
@@ -2423,22 +2435,32 @@ function CommandPalette({ onClose, profiles, setView, setEditor, toggleRun, togg
 }
 
 /* ---- Folders manager --------------------------------------------- */
-function FoldersView({ folders, profiles, onOpen, onCreate, onRename, onDelete }) {
+function FoldersView({ folders = [], profiles = [], onAdd, onRename, onDelete, onSelectFolder, onBack, onOpen, onCreate }) {
+  const skipBlurRef = useRef(false);
   const [newName, setNewName] = useState("");
   const [editing, setEditing] = useState(null);   // folder being renamed
   const [draft, setDraft] = useState("");
   const [confirm, setConfirm] = useState(null);    // folder pending delete
 
+  const handleOpen = onSelectFolder || onOpen;
+  const handleAdd = onAdd || onCreate;
+
   const stat = (name) => {
-    const inF = profiles.filter(p => p.folder === name);
+    const inF = (profiles || []).filter(p => p.folder === name);
     return {
       total: inF.length,
       running: inF.filter(p => p.status === "running").length,
       coherent: inF.filter(p => coherence(p).length === 0).length,
     };
   };
-  const submitNew = () => { const n = newName.trim(); if (n) { onCreate(n); setNewName(""); } };
-  const commitRename = () => { if (editing) onRename(editing, draft); setEditing(null); setDraft(""); };
+  const submitNew = () => { const n = newName.trim(); if (n) { handleAdd?.(n); setNewName(""); } };
+  const commitRename = (fromName, nextDraft) => {
+    if (!fromName) return;
+    const trimmed = (nextDraft ?? "").trim();
+    setEditing(null);
+    setDraft("");
+    if (trimmed && trimmed !== fromName) onRename(fromName, trimmed);
+  };
 
   return (
     <div className="ps-scroll">
@@ -2461,7 +2483,10 @@ function FoldersView({ folders, profiles, onOpen, onCreate, onRename, onDelete }
         {folders.length === 0 && (
           <div className="ps-empty" style={{ gridColumn: "1/-1", padding: 48 }}>
             <div className="ps-empty-ic"><FolderTree size={26} color={T.violet} /></div>
-            <div style={{ color: T.muted, fontSize: 13 }}>No folders yet — add one above.</div>
+            <div style={{ color: T.muted, fontSize: 13, marginBottom: 12 }}>No folders yet — add one above.</div>
+            {onBack && (
+              <button className="ps-btn ghost sm" onClick={onBack}>Back to Profiles</button>
+            )}
           </div>
         )}
         {folders.map(f => {
@@ -2471,12 +2496,33 @@ function FoldersView({ folders, profiles, onOpen, onCreate, onRename, onDelete }
               <div className="ps-fold-top">
                 <div className="ps-fold-ic"><FolderTree size={16} color={T.violet} /></div>
                 {editing === f ? (
-                  <input autoFocus className="ps-in sm" value={draft}
+                  <input
+                    autoFocus
+                    className="ps-in sm"
+                    value={draft}
                     onChange={e => setDraft(e.target.value)}
-                    onKeyDown={e => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") { setEditing(null); setDraft(""); } }}
-                    onBlur={commitRename} />
+                    onKeyDown={e => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        skipBlurRef.current = true;
+                        commitRename(f, draft);
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        skipBlurRef.current = true;
+                        setEditing(null);
+                        setDraft("");
+                      }
+                    }}
+                    onBlur={() => {
+                      if (skipBlurRef.current) {
+                        skipBlurRef.current = false;
+                        return;
+                      }
+                      commitRename(f, draft);
+                    }}
+                  />
                 ) : (
-                  <button className="ps-fold-name" onClick={() => onOpen(f)} title="Open in Profiles">{f}</button>
+                  <button className="ps-fold-name" onClick={() => handleOpen?.(f)} title="Open in Profiles">{f}</button>
                 )}
               </div>
               <div className="ps-fold-stats">
@@ -2485,7 +2531,7 @@ function FoldersView({ folders, profiles, onOpen, onCreate, onRename, onDelete }
                 <span className="ps-fold-coh"><ShieldCheck size={12} /> {s.coherent}/{s.total}</span>
               </div>
               <div className="ps-fold-actions">
-                <button className="ps-btn ghost sm" onClick={() => onOpen(f)}>Open <ArrowRight size={13} /></button>
+                <button className="ps-btn ghost sm" onClick={() => handleOpen?.(f)}>Open <ArrowRight size={13} /></button>
                 <div style={{ flex: 1 }} />
                 <button className="ps-iconbtn sm" title="Rename" onClick={() => { setEditing(f); setDraft(f); }}><Pencil size={13} /></button>
                 {confirm === f ? (
