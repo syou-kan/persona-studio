@@ -1272,8 +1272,11 @@ def create_app(data_dir: Optional[str] = None, start_scheduler: bool = True, *,
             raise HTTPException(404, "proxy not found")
         res = pp.check(proxy)
         status = "ok" if res.get("ok") else ("skipped" if res.get("ok") is None else "failed")
-        pool.update(pid, {"status": status, "lastCheck": res, "checkedAt": time.time()})
-        return {**res, "status": status}
+        patch = {"status": status, "lastCheck": res, "checkedAt": time.time()}
+        if res.get("ok") and res.get("country") and not proxy.get("country"):
+            patch["country"] = str(res["country"]).upper()
+        pool.update(pid, patch)
+        return {**res, "status": status, "country": patch.get("country") or proxy.get("country")}
 
     @app.put("/api/proxies/{pid}")
     def update_proxy(pid: str, body: dict):
@@ -1338,11 +1341,11 @@ def create_app(data_dir: Optional[str] = None, start_scheduler: bool = True, *,
         assigned = 0
         for i, prof in enumerate(targets):
             pr = proxies[i % len(proxies)]
+            cc = (pr.get("country") or (pr.get("lastCheck") or {}).get("country") or "").upper()
             prof["proxy"] = {"type": pr.get("type", "HTTP"), "host": pr["host"], "port": str(pr["port"]),
                              "user": pr.get("user") or "", "pass": pr.get("pass") or "",
-                             "country": pr.get("country") or "",
+                             "country": cc,
                              "changeIpUrl": pr.get("changeIpUrl") or ""}
-            cc = (pr.get("country") or "").upper()
             loc = devices.COUNTRY_TO_LOCALE.get(cc)
             if loc:
                 prof["locale"] = loc

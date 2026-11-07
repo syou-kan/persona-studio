@@ -178,3 +178,46 @@ def test_cli_accepts_every_pasted_format():
     assert _parse_proxy("h:3128:US", None).country == "US"
     with pytest.raises(RuntimeError):
         _parse_proxy("not a proxy", None)
+
+
+def test_pool_test_backfills_country_and_assign_aligns_locale(tmp_path, monkeypatch):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    from persona.server import TOKEN_HEADER, create_app
+    import persona.proxypool
+
+    app = create_app(str(tmp_path), start_scheduler=False)
+    c = TestClient(app, base_url="http://localhost", headers={TOKEN_HEADER: app.state.api_token})
+
+    # 1. Import a proxy without country
+    res = c.post("/api/proxies", json={"text": "1.2.3.4:8080:u:p"}).json()
+    assert len(res["proxies"]) == 1
+    pid = res["proxies"][0]["id"]
+    assert res["proxies"][0].get("country") is None
+
+    # 2. Mock proxypool.check
+    monkeypatch.setattr(
+        persona.proxypool,
+        "check",
+        lambda proxy, bridge_port=None: {"ok": True, "ip": "1.2.3.4", "country": "JP", "city": "Tokyo", "latencyMs": 45},
+    )
+
+    # 3. Call test proxy and check country backfill in response and pool
+    test_res = c.post(f"/api/proxies/{pid}/test").json()
+    assert test_res.get("status") == "ok"
+    assert test_res.get("country") == "JP"
+
+    pool_list = c.get("/api/proxies").json()
+    assert len(pool_list) == 1
+    assert pool_list[0]["country"] == "JP"
+
+    # 4. Create profile and assign proxy
+    prof_id = c.post("/api/profiles", json={"name": "test-prof", "os": "Windows"}).json()["id"]
+    assign_res = c.post("/api/proxies/assign", json={"profileIds": [prof_id]}).json()
+    assert assign_res.get("assigned") == 1
+    profs = c.get("/api/profiles").json()
+    prof = next(p for p in profs if p["id"] == prof_id)
+    assert prof["proxy"]["country"] == "JP"
+    assert prof["locale"] == "ja-JP"
+    assert prof["timezone"] == "Asia/Tokyo"

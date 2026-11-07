@@ -1213,11 +1213,47 @@ function ProbePanel({ probe, kind }) {
 function Editor({ profile, live, folders = [], onClose, onSave }) {
   const [p, setP] = useState(profile);
   const [tab, setTab] = useState("general");
+  const [pool, setPool] = useState([]);
+  useEffect(() => {
+    if (!live) return;
+    api.listProxies().then(list => setPool(Array.isArray(list) ? list : [])).catch(() => {});
+  }, [live]);
+
   const set = (patch) => setP(x => ({ ...x, ...patch }));
   const changeOS = (os) => set({ os, userAgent: uaFor(os), screen: SCREENS[os][0], cores: CORES[os][1], memory: RAM[os][1], webglRenderer: GPUS[os][0], webglVendor: vendorFor(GPUS[os][0]) });
   const changeLocale = (locale) => set({ locale, timezone: LOCALES[locale] });
   const setProxy = (patch) => set({ proxy: { ...(p.proxy || { type: "HTTP", host: "", port: "", user: "", pass: "", country: "" }), ...patch } });
 
+  const applyPoolProxy = (pr) => {
+    if (!pr) {
+      set({ proxy: null });
+      return;
+    }
+    const cc = (pr.country || pr.lastCheck?.country || p.proxy?.country || "US").toUpperCase();
+    const loc = COUNTRY_LOCALE[cc];
+    const nextProxy = {
+      type: pr.type || "HTTP",
+      host: pr.host || "",
+      port: String(pr.port || ""),
+      user: pr.user || "",
+      pass: pr.pass || "",
+      country: cc,
+      changeIpUrl: pr.changeIpUrl || "",
+    };
+    set({
+      proxy: nextProxy,
+      ...(loc ? { locale: loc, timezone: LOCALES[loc] } : {}),
+    });
+    toast.success(`Proxy applied: ${nextProxy.type} ${nextProxy.host}:${nextProxy.port}`);
+  };
+
+  const matchedPoolId = p.proxy
+    ? (pool.find(x =>
+        x.host === p.proxy.host &&
+        String(x.port) === String(p.proxy.port) &&
+        (x.user || "") === (p.proxy.user || "")
+      )?.id || "")
+    : "";
   const iss = coherence(p);
   const score = Math.max(0, 100 - iss.length * 22);
 
@@ -1474,15 +1510,63 @@ function Editor({ profile, live, folders = [], onClose, onSave }) {
             <>
               <div className="ps-proxy-toggle">
                 <span style={{ fontSize: 13, fontWeight: 600 }}>Use proxy for this profile</span>
-                <button className={"ps-toggle" + (p.proxy ? " on" : "")} onClick={() => set({ proxy: p.proxy ? null : { type: "HTTP", host: "", port: "", user: "", pass: "", country: "US" } })}>
+                <button className={"ps-toggle" + (p.proxy ? " on" : "")} onClick={() => {
+                  if (p.proxy) {
+                    set({ proxy: null });
+                  } else if (pool.length > 0) {
+                    applyPoolProxy(pool[0]);
+                  } else {
+                    set({ proxy: { type: "HTTP", host: "", port: "", user: "", pass: "", country: "US" } });
+                  }
+                }}>
                   <span className="knob" /> <em>{p.proxy ? "On" : "Off"}</em>
                 </button>
               </div>
+              {pool.length > 0 && (
+                <Field label={`Select from proxy pool (${pool.length} saved)`}>
+                  <select className="ps-in mono" value={p.proxy ? (matchedPoolId || "__custom__") : ""}
+                    onChange={e => {
+                      const val = e.target.value;
+                      if (!val) { set({ proxy: null }); return; }
+                      const pr = pool.find(x => x.id === val);
+                      if (pr) applyPoolProxy(pr);
+                    }}>
+                    <option value="">— Direct (no proxy) —</option>
+                    {p.proxy && !matchedPoolId && (
+                      <option value="__custom__" disabled>
+                        Custom: {p.proxy.type || "HTTP"} · {p.proxy.host || "manual"}:{p.proxy.port || "—"}{p.proxy.country ? ` (${p.proxy.country})` : ""}
+                      </option>
+                    )}
+                    {pool.map(x => {
+                      const cc = x.country || x.lastCheck?.country || "";
+                      const statusTxt = x.status === "ok"
+                        ? ` · ✓${x.lastCheck?.latencyMs ? ` ${x.lastCheck.latencyMs}ms` : ""}`
+                        : x.status === "failed" ? " · ✗ failed" : "";
+                      return (
+                        <option key={x.id} value={x.id}>
+                          {x.type || "HTTP"} · {x.host}:{x.port}{cc ? ` (${cc})` : ""}{x.user ? ` · ${x.user}` : ""}{statusTxt}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </Field>
+              )}
               {p.proxy ? (
                 <>
                   <Row>
                     <Field label="Type"><select className="ps-in" value={p.proxy.type} onChange={e => setProxy({ type: e.target.value })}>{["HTTP", "HTTPS", "SOCKS5", "SOCKS4"].map(t => <option key={t}>{t}</option>)}</select></Field>
-                    <Field label="Country"><select className="ps-in" value={p.proxy.country} onChange={e => setProxy({ country: e.target.value })}>{Object.keys(COUNTRY_LOCALE).map(c => <option key={c}>{c}</option>)}</select></Field>
+                    <Field label="Country">
+                      <select className="ps-in" value={p.proxy.country} onChange={e => {
+                        const c = e.target.value;
+                        const loc = COUNTRY_LOCALE[c];
+                        set({
+                          proxy: { ...(p.proxy || { type: "HTTP", host: "", port: "", user: "", pass: "", country: "" }), country: c },
+                          ...(loc ? { locale: loc, timezone: LOCALES[loc] } : {}),
+                        });
+                      }}>
+                        {Object.keys(COUNTRY_LOCALE).map(c => <option key={c}>{c}</option>)}
+                      </select>
+                    </Field>
                   </Row>
                   <Row>
                     <Field label="Host"><input className="ps-in mono" value={p.proxy.host} onChange={e => setProxy({ host: e.target.value })} placeholder="host.proxy.io" /></Field>
@@ -1503,13 +1587,30 @@ function Editor({ profile, live, folders = [], onClose, onSave }) {
                     <input className="ps-in mono" placeholder="host:port:user:pass  or  socks5://user:pass@host:port"
                       onPaste={e => {
                         const parsed = parseProxyLine(e.clipboardData.getData("text"));
-                        if (parsed) { e.preventDefault(); setProxy(parsed); toast.success(`Proxy filled in: ${parsed.type} ${parsed.host}:${parsed.port}`); }
+                        if (parsed) {
+                          e.preventDefault();
+                          const loc = parsed.country && COUNTRY_LOCALE[parsed.country.toUpperCase()];
+                          set({
+                            proxy: { ...(p.proxy || { type: "HTTP", host: "", port: "", user: "", pass: "", country: "" }), ...parsed },
+                            ...(loc ? { locale: loc, timezone: LOCALES[loc] } : {}),
+                          });
+                          toast.success(`Proxy filled in: ${parsed.type} ${parsed.host}:${parsed.port}`);
+                        }
                       }}
                       onKeyDown={e => {
                         if (e.key !== "Enter") return;
                         const parsed = parseProxyLine(e.currentTarget.value);
-                        if (parsed) { setProxy(parsed); e.currentTarget.value = ""; toast.success(`Proxy filled in: ${parsed.type} ${parsed.host}:${parsed.port}`); }
-                        else toast.error("That doesn't look like a proxy.");
+                        if (parsed) {
+                          const loc = parsed.country && COUNTRY_LOCALE[parsed.country.toUpperCase()];
+                          set({
+                            proxy: { ...(p.proxy || { type: "HTTP", host: "", port: "", user: "", pass: "", country: "" }), ...parsed },
+                            ...(loc ? { locale: loc, timezone: LOCALES[loc] } : {}),
+                          });
+                          e.currentTarget.value = "";
+                          toast.success(`Proxy filled in: ${parsed.type} ${parsed.host}:${parsed.port}`);
+                        } else {
+                          toast.error("That doesn't look like a proxy.");
+                        }
                       }} />
                   </Field>
                   <Field label="Change-IP URL (rotating / mobile proxies, optional)">
@@ -1536,10 +1637,19 @@ function Editor({ profile, live, folders = [], onClose, onSave }) {
                           setProbe({ kind: "proxy", state: "error", data: "The engine is offline. Start it (start.bat, or `persona serve`) to test the proxy." });
                         } else if (!p.proxy.host || !String(p.proxy.port || "").trim()) {
                           setProbe({ kind: "proxy", state: "error", data: "Fill in the proxy host and port first." });
-                        } else if (cookiesReady) {
-                          runProbe("proxy", () => api.proxyTest(p.id));         // full browser-level test
                         } else {
-                          runProbe("proxy", () => api.checkProxy(p.proxy));     // quick check, unsaved form
+                          runProbe("proxy", async () => {
+                            const res = await (cookiesReady ? api.proxyTest(p.id) : api.checkProxy(p.proxy));
+                            if (res?.ok && res.country) {
+                              const cc = res.country.toUpperCase();
+                              const loc = COUNTRY_LOCALE[cc];
+                              set({
+                                proxy: { ...p.proxy, country: res.country },
+                                ...(loc ? { locale: loc, timezone: LOCALES[loc] } : {}),
+                              });
+                            }
+                            return res;
+                          });
                         }
                       }}>
                       <RefreshCw size={13} /> Test connection
