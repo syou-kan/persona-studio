@@ -1214,6 +1214,7 @@ function Editor({ profile, live, folders = [], onClose, onSave }) {
   const [p, setP] = useState(profile);
   const [tab, setTab] = useState("general");
   const [pool, setPool] = useState([]);
+  const [proxyModeOverride, setProxyModeOverride] = useState(null);
   useEffect(() => {
     if (!live) return;
     api.listProxies().then(list => setPool(Array.isArray(list) ? list : [])).catch(() => {});
@@ -1244,16 +1245,15 @@ function Editor({ profile, live, folders = [], onClose, onSave }) {
       proxy: nextProxy,
       ...(loc ? { locale: loc, timezone: LOCALES[loc] } : {}),
     });
-    toast.success(`Proxy applied: ${nextProxy.type} ${nextProxy.host}:${nextProxy.port}`);
+    toast.success(`Proxy selected: ${nextProxy.type} ${nextProxy.host}:${nextProxy.port}`);
   };
 
-  const matchedPoolId = p.proxy
-    ? (pool.find(x =>
-        x.host === p.proxy.host &&
-        String(x.port) === String(p.proxy.port) &&
-        (x.user || "") === (p.proxy.user || "")
-      )?.id || "")
-    : "";
+  const matchedPr = p.proxy ? pool.find(x => x.host === p.proxy.host && String(x.port) === String(p.proxy.port) && (x.user || "") === (p.proxy.user || "")) : null;
+  const currentMode = proxyModeOverride || (
+    !p.proxy
+      ? "direct"
+      : (matchedPr ? "pool" : "custom")
+  );
   const iss = coherence(p);
   const score = Math.max(0, 100 - iss.length * 22);
 
@@ -1508,55 +1508,191 @@ function Editor({ profile, live, folders = [], onClose, onSave }) {
 
           {tab === "proxy" && (
             <>
-              <div className="ps-proxy-toggle">
-                <span style={{ fontSize: 13, fontWeight: 600 }}>Use proxy for this profile</span>
-                <button className={"ps-toggle" + (p.proxy ? " on" : "")} onClick={() => {
-                  if (p.proxy) {
-                    set({ proxy: null });
-                  } else if (pool.length > 0) {
-                    applyPoolProxy(pool[0]);
-                  } else {
-                    set({ proxy: { type: "HTTP", host: "", port: "", user: "", pass: "", country: "US" } });
-                  }
-                }}>
-                  <span className="knob" /> <em>{p.proxy ? "On" : "Off"}</em>
-                </button>
+              <div style={{ marginBottom: 16 }}>
+                <div className="ps-flabel" style={{ marginBottom: 6 }}>Proxy Mode</div>
+                <div className="ps-seg" style={{ maxWidth: 440 }}>
+                  {[
+                    { id: "direct", label: "Direct (No Proxy)" },
+                    { id: "pool", label: `Proxy Pool (${pool.length})` },
+                    { id: "custom", label: "Custom Manual" },
+                  ].map(m => (
+                    <button key={m.id}
+                      type="button"
+                      className={currentMode === m.id ? "on" : ""}
+                      onClick={() => {
+                        setProxyModeOverride(m.id);
+                        if (m.id === "direct") {
+                          set({ proxy: null });
+                        } else if (m.id === "pool") {
+                          if (matchedPr) {
+                            // already on a valid pool proxy
+                          } else if (pool.length > 0) {
+                            applyPoolProxy(pool[0]);
+                          } else {
+                            toast.error("Proxy pool is empty. Please add proxies on the Proxies page first.");
+                          }
+                        } else if (m.id === "custom") {
+                          if (!p.proxy) {
+                            set({ proxy: { type: "HTTP", host: "", port: "", user: "", pass: "", country: "US" } });
+                          }
+                        }
+                      }}>
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
               </div>
-              {pool.length > 0 && (
-                <Field label={`Select from proxy pool (${pool.length} saved)`}>
-                  <select className="ps-in mono" value={p.proxy ? (matchedPoolId || "__custom__") : ""}
-                    onChange={e => {
-                      const val = e.target.value;
-                      if (!val) { set({ proxy: null }); return; }
-                      const pr = pool.find(x => x.id === val);
-                      if (pr) applyPoolProxy(pr);
-                    }}>
-                    <option value="">— Direct (no proxy) —</option>
-                    {p.proxy && !matchedPoolId && (
-                      <option value="__custom__" disabled>
-                        Custom: {p.proxy.type || "HTTP"} · {p.proxy.host || "manual"}:{p.proxy.port || "—"}{p.proxy.country ? ` (${p.proxy.country})` : ""}
-                      </option>
-                    )}
-                    {pool.map(x => {
-                      const cc = x.country || x.lastCheck?.country || "";
-                      const statusTxt = x.status === "ok"
-                        ? ` · ✓${x.lastCheck?.latencyMs ? ` ${x.lastCheck.latencyMs}ms` : ""}`
-                        : x.status === "failed" ? " · ✗ failed" : "";
-                      return (
-                        <option key={x.id} value={x.id}>
-                          {x.type || "HTTP"} · {x.host}:{x.port}{cc ? ` (${cc})` : ""}{x.user ? ` · ${x.user}` : ""}{statusTxt}
-                        </option>
-                      );
-                    })}
-                  </select>
-                </Field>
+
+              {currentMode === "direct" && (
+                <div className="ps-hint">
+                  <WifiOff size={12} /> No proxy — this profile connects directly to the Internet. Select <strong>Proxy Pool</strong> or <strong>Custom Manual</strong> above to route through a proxy.
+                </div>
               )}
-              {p.proxy ? (
+
+              {currentMode === "pool" && (
+                <>
+                  {pool.length === 0 ? (
+                    <div className="ps-hint">
+                      <ShieldAlert size={12} /> The proxy pool is empty. Please import proxies on the <strong>Proxies</strong> page first, or switch to <strong>Custom Manual</strong> mode above.
+                    </div>
+                  ) : (
+                    <>
+                      <Field label="Select from proxy pool">
+                        <select className="ps-in mono"
+                          value={matchedPr?.id || pool[0]?.id || ""}
+                          onChange={e => {
+                            const pr = pool.find(x => x.id === e.target.value);
+                            if (pr) applyPoolProxy(pr);
+                          }}>
+                          {pool.map(x => {
+                            const cc = x.country || x.lastCheck?.country || "";
+                            const statusTxt = x.status === "ok"
+                              ? ` · ✓${x.lastCheck?.latencyMs ? ` ${x.lastCheck.latencyMs}ms` : ""}`
+                              : x.status === "failed" ? " · ✗ failed" : "";
+                            return (
+                              <option key={x.id} value={x.id}>
+                                {x.type || "HTTP"} · {x.host}:{x.port}{cc ? ` (${cc})` : ""}{x.user ? ` · ${x.user}` : ""}{statusTxt}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </Field>
+
+                      {p.proxy && (
+                        <div style={{
+                          background: T.surface,
+                          border: `1px solid ${T.line}`,
+                          borderRadius: 12,
+                          padding: "14px 16px",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 10,
+                          marginBottom: 16,
+                        }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                              <span style={{ fontFamily: FONT.mono, fontWeight: 700, fontSize: 13, color: T.text }}>
+                                {p.proxy.type || "HTTP"}://{p.proxy.host}:{p.proxy.port}
+                              </span>
+                              {p.proxy.country && (
+                                <span className="ps-pill" style={{ background: T.violetDim, color: T.lilac }}>
+                                  {p.proxy.country}
+                                </span>
+                              )}
+                            </div>
+                            <div>
+                              {matchedPr?.status === "ok" ? (
+                                <span className="ps-pill ok"><Check size={12} /> {matchedPr.lastCheck?.latencyMs ? `${matchedPr.lastCheck.latencyMs}ms` : "Active"}</span>
+                              ) : matchedPr?.status === "failed" ? (
+                                <span className="ps-pill warn"><ShieldAlert size={12} /> Failed</span>
+                              ) : (
+                                <span className="ps-pill" style={{ color: T.dim }}><Circle size={10} /> Ready</span>
+                              )}
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 16, fontSize: 12, color: T.muted, flexWrap: "wrap" }}>
+                            <span>Auth: <strong style={{ color: p.proxy.user ? T.text : T.dim }}>{p.proxy.user ? `${p.proxy.user} (protected)` : "None"}</strong></span>
+                            <span>Aligned: <strong style={{ color: T.lilac }}>{p.locale}</strong> · <strong style={{ color: T.lilac }}>{p.timezone}</strong></span>
+                            {p.proxy.changeIpUrl && <span style={{ color: T.mint }}>• Rotating URL enabled</span>}
+                          </div>
+                        </div>
+                      )}
+
+                      {p.proxy && (
+                        <>
+                          <div className="ps-proxy-toggle">
+                            <span style={{ fontSize: 13 }}>Languages follow the exit IP</span>
+                            <button className={"ps-toggle" + (p.autoLang ? " on" : "")} onClick={() => set({ autoLang: !p.autoLang })}>
+                              <span className="knob" /> <em>{p.autoLang ? "On" : "Off"}</em>
+                            </button>
+                          </div>
+                          <div className="ps-hint"><Globe size={12} /> On: each launch sets the browser languages from the proxy's exit country, e.g. a German IP gives <code>de-DE, de, en-US, en</code>. Best for fresh profiles on rotating proxies. Leave it off for an account that already has a language: switching it is a signal of its own.</div>
+                          <div className="ps-cookie-actions" style={{ marginTop: 4 }}>
+                            <button className="ps-btn ghost sm"
+                              disabled={probe?.state === "running"}
+                              onClick={() => {
+                                if (!live) {
+                                  setProbe({ kind: "proxy", state: "error", data: "The engine is offline. Start it (start.bat, or `persona serve`) to test the proxy." });
+                                } else if (!p.proxy?.host || !String(p.proxy?.port || "").trim()) {
+                                  setProbe({ kind: "proxy", state: "error", data: "Fill in the proxy host and port first." });
+                                } else {
+                                  runProbe("proxy", async () => {
+                                    const res = await (cookiesReady ? api.proxyTest(p.id) : api.checkProxy(p.proxy));
+                                    if (res?.ok && res.country) {
+                                      const cc = res.country.toUpperCase();
+                                      const loc = COUNTRY_LOCALE[cc];
+                                      set({
+                                        proxy: { ...p.proxy, country: res.country },
+                                        ...(loc ? { locale: loc, timezone: LOCALES[loc] } : {}),
+                                      });
+                                    }
+                                    return res;
+                                  });
+                                }
+                              }}>
+                              <RefreshCw size={13} /> Test connection
+                            </button>
+                            {p.proxy.changeIpUrl && (
+                              <button className="ps-btn ghost sm" disabled={!cookiesReady || !(p.proxy.changeIpUrl || "").trim() || probe?.state === "running"}
+                                title={cookiesReady ? "Request a new exit IP now" : "Save the profile on a live engine first"}
+                                onClick={async () => {
+                                  try {
+                                    const r = await api.changeIp(p.id);
+                                    r.ok ? toast.success(`New exit IP requested (HTTP ${r.status}).`) : toast.error(`Change-IP failed: ${r.status || ""} ${r.body || ""}`);
+                                  } catch (err) { toast.error("Change-IP failed: " + err.message); }
+                                }}>
+                                <RefreshCw size={13} /> Change IP
+                              </button>
+                            )}
+                            <button className="ps-btn ghost sm"
+                              disabled={!cookiesReady || probe?.state === "running"}
+                              onClick={() => runProbe("dns", () => api.dns(p.id))}
+                              title={cookiesReady
+                                ? "Do the profile's DNS lookups exit through the proxy, or leak to your real ISP?"
+                                : "Save the profile first: the DNS test opens its real browser."}>
+                              <Globe size={13} /> DNS leak test
+                            </button>
+                          </div>
+                          <ProbePanel probe={probe} kind="proxy" />
+                          <ProbePanel probe={probe} kind="dns" />
+                          <div className="ps-hint"><MapPin size={12} /> {cookiesReady
+                            ? "Test connection routes a real request and reports the exit IP, country and WebRTC leaks. DNS leak test checks whether name lookups escape the proxy to your real ISP's resolver."
+                            : live
+                              ? "Test connection checks the proxy from this form: exit IP, country and speed. Save the profile for the full browser test (WebRTC, DNS leak)."
+                              : "Start the engine (start.bat, or persona serve) to test the proxy."}</div>
+                        </>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
+
+              {currentMode === "custom" && (
                 <>
                   <Row>
-                    <Field label="Type"><select className="ps-in" value={p.proxy.type} onChange={e => setProxy({ type: e.target.value })}>{["HTTP", "HTTPS", "SOCKS5", "SOCKS4"].map(t => <option key={t}>{t}</option>)}</select></Field>
+                    <Field label="Type"><select className="ps-in" value={p.proxy?.type || "HTTP"} onChange={e => setProxy({ type: e.target.value })}>{["HTTP", "HTTPS", "SOCKS5", "SOCKS4"].map(t => <option key={t}>{t}</option>)}</select></Field>
                     <Field label="Country">
-                      <select className="ps-in" value={p.proxy.country} onChange={e => {
+                      <select className="ps-in" value={p.proxy?.country || "US"} onChange={e => {
                         const c = e.target.value;
                         const loc = COUNTRY_LOCALE[c];
                         set({
@@ -1569,8 +1705,8 @@ function Editor({ profile, live, folders = [], onClose, onSave }) {
                     </Field>
                   </Row>
                   <Row>
-                    <Field label="Host"><input className="ps-in mono" value={p.proxy.host} onChange={e => setProxy({ host: e.target.value })} placeholder="host.proxy.io" /></Field>
-                    <Field label="Port"><input className="ps-in mono" value={p.proxy.port} onChange={e => setProxy({ port: e.target.value })} placeholder="8080" /></Field>
+                    <Field label="Host"><input className="ps-in mono" value={p.proxy?.host || ""} onChange={e => setProxy({ host: e.target.value })} placeholder="host.proxy.io" /></Field>
+                    <Field label="Port"><input className="ps-in mono" value={p.proxy?.port || ""} onChange={e => setProxy({ port: e.target.value })} placeholder="8080" /></Field>
                   </Row>
                   <div className="ps-proxy-toggle">
                     <span style={{ fontSize: 13 }}>Languages follow the exit IP</span>
@@ -1580,8 +1716,8 @@ function Editor({ profile, live, folders = [], onClose, onSave }) {
                   </div>
                   <div className="ps-hint"><Globe size={12} /> On: each launch sets the browser languages from the proxy's exit country, e.g. a German IP gives <code>de-DE, de, en-US, en</code>. Best for fresh profiles on rotating proxies. Leave it off for an account that already has a language: switching it is a signal of its own.</div>
                   <Row>
-                    <Field label="Username"><input className="ps-in mono" value={p.proxy.user} onChange={e => setProxy({ user: e.target.value })} /></Field>
-                    <Field label="Password"><input className="ps-in mono" type="password" value={p.proxy.pass} onChange={e => setProxy({ pass: e.target.value })} /></Field>
+                    <Field label="Username"><input className="ps-in mono" value={p.proxy?.user || ""} onChange={e => setProxy({ user: e.target.value })} /></Field>
+                    <Field label="Password"><input className="ps-in mono" type="password" value={p.proxy?.pass || ""} onChange={e => setProxy({ pass: e.target.value })} /></Field>
                   </Row>
                   <Field label="Paste a proxy (any format)">
                     <input className="ps-in mono" placeholder="host:port:user:pass  or  socks5://user:pass@host:port"
@@ -1615,9 +1751,9 @@ function Editor({ profile, live, folders = [], onClose, onSave }) {
                   </Field>
                   <Field label="Change-IP URL (rotating / mobile proxies, optional)">
                     <div style={{ display: "flex", gap: 6 }}>
-                      <input className="ps-in mono" style={{ flex: 1 }} value={p.proxy.changeIpUrl || ""}
+                      <input className="ps-in mono" style={{ flex: 1 }} value={p.proxy?.changeIpUrl || ""}
                         onChange={e => setProxy({ changeIpUrl: e.target.value })} placeholder="https://vendor.example/api/rotate?key=…" />
-                      <button className="ps-btn ghost sm" disabled={!cookiesReady || !(p.proxy.changeIpUrl || "").trim() || probe?.state === "running"}
+                      <button className="ps-btn ghost sm" disabled={!cookiesReady || !(p.proxy?.changeIpUrl || "").trim() || probe?.state === "running"}
                         title={cookiesReady ? "Request a new exit IP now" : "Save the profile on a live engine first"}
                         onClick={async () => {
                           try {
@@ -1635,7 +1771,7 @@ function Editor({ profile, live, folders = [], onClose, onSave }) {
                       onClick={() => {
                         if (!live) {
                           setProbe({ kind: "proxy", state: "error", data: "The engine is offline. Start it (start.bat, or `persona serve`) to test the proxy." });
-                        } else if (!p.proxy.host || !String(p.proxy.port || "").trim()) {
+                        } else if (!p.proxy?.host || !String(p.proxy?.port || "").trim()) {
                           setProbe({ kind: "proxy", state: "error", data: "Fill in the proxy host and port first." });
                         } else {
                           runProbe("proxy", async () => {
@@ -1671,7 +1807,7 @@ function Editor({ profile, live, folders = [], onClose, onSave }) {
                       ? "Test connection checks the proxy from this form: exit IP, country and speed. Save the profile for the full browser test (WebRTC, DNS leak)."
                       : "Start the engine (start.bat, or persona serve) to test the proxy."}</div>
                 </>
-              ) : <div className="ps-hint">No proxy — this profile connects directly. Turn it on to route through a residential or datacenter proxy.</div>}
+              )}
             </>
           )}
 
