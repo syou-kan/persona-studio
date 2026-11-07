@@ -131,12 +131,14 @@ LOCALES = {
     "fr-FR": ("Europe/Paris", ["fr-FR", "fr", "en"]),
     "es-ES": ("Europe/Madrid", ["es-ES", "es", "en"]),
     "tr-TR": ("Europe/Istanbul", ["tr-TR", "tr", "en"]),
+    "ja-JP": ("Asia/Tokyo", ["ja-JP", "ja", "en-US", "en"]),
 }
 
 # Rough country -> locale hint, so a proxy's country can steer the locale.
 COUNTRY_TO_LOCALE = {
     "US": "en-US", "GB": "en-GB", "UK": "en-GB", "PK": "en-PK",
     "IN": "en-IN", "DE": "de-DE", "FR": "fr-FR", "ES": "es-ES", "TR": "tr-TR",
+    "JP": "ja-JP",
 }
 
 # Approximate (city-level) coordinates per country, so a profile's
@@ -148,7 +150,7 @@ COUNTRY_GEO = {
     "UK": (51.5074, -0.1278),  "PK": (24.8607, 67.0011),
     "IN": (28.6139, 77.2090),  "DE": (52.5200, 13.4050),
     "FR": (48.8566, 2.3522),   "ES": (40.4168, -3.7038),
-    "TR": (41.0082, 28.9784),
+    "TR": (41.0082, 28.9784),  "JP": (35.6762, 139.6503),
 }
 
 # Country -> the language its browsers are usually set to, for profiles whose
@@ -173,6 +175,7 @@ COUNTRY_LANGUAGE = {
 LOCALE_TO_COUNTRY = {
     "en-US": "US", "en-GB": "GB", "en-PK": "PK", "en-IN": "IN",
     "de-DE": "DE", "fr-FR": "FR", "es-ES": "ES", "tr-TR": "TR",
+    "ja-JP": "JP",
 }
 
 # Fonts that actually ship with each OS. Font-probing is a classic fingerprint
