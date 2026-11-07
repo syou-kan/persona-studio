@@ -362,7 +362,7 @@ function Toaster() {
 
 /* ================================================================== */
 export default function App() {
-  const [profiles, setProfiles] = useState(seed);
+  const [profiles, setProfiles] = useState([]);
   const [view, setView] = useState("profiles");
   const [folder, setFolder] = useState("All profiles");
   const [query, setQuery] = useState("");
@@ -380,7 +380,7 @@ export default function App() {
   const [dlMin, setDlMin] = useState(false);
   const [defaultEngine, setDefaultEngine] = useState(ENGINE_ORDER[0]); // new-profile default
   const [config, setConfig] = useState(null);        // {root, version, ...} from API
-  const [folders, setFolders] = useState(() => FOLDERS.filter(f => f !== "All profiles"));
+  const [folders, setFolders] = useState([]);
   const [palette, setPalette] = useState(() => {     // "dark" | "light"
     const t = (typeof localStorage !== "undefined" && localStorage.getItem("ps-theme")) || "dark";
     Object.assign(T, t === "light" ? LIGHT : DARK);  // paint before children render
@@ -413,23 +413,44 @@ export default function App() {
   const refresh = async () => setProfiles(await api.list());
   useEffect(() => {
     let cancelled = false;
+    const enterDemo = () => {
+      if (cancelled) return;
+      setProfiles(seed);
+      setFolders(FOLDERS.filter(f => f !== "All profiles"));
+      setMode("demo");
+    };
     (async () => {
       const up = await api.ping();
       if (cancelled) return;
-      if (up) {
-        try {
-          await refresh();
-          try { setEngines(await api.engines()); } catch { /* optional */ }
-          try { setEngineSt(await api.engineStatus()); } catch { /* older engine */ }
-          try {
-            const cfg = await api.getConfig();
-            setConfig(cfg);
-            if (cfg?.default_engine) setDefaultEngine(cfg.default_engine);
-            if (Array.isArray(cfg?.folders)) setFolders(cfg.folders);
-          } catch { /* optional */ }
-          setMode("live");
-        } catch { setMode("demo"); }
-      } else { setMode("demo"); }
+      if (!up) {
+        enterDemo();
+        return;
+      }
+      try {
+        const [listRes, engRes, stRes, cfgRes] = await Promise.allSettled([
+          api.list(),
+          api.engines(),
+          api.engineStatus(),
+          api.getConfig(),
+        ]);
+        if (cancelled) return;
+        if (listRes.status !== "fulfilled") {
+          enterDemo();
+          return;
+        }
+        setProfiles(listRes.value);
+        if (engRes.status === "fulfilled") setEngines(engRes.value);
+        if (stRes.status === "fulfilled") setEngineSt(stRes.value);
+        if (cfgRes.status === "fulfilled" && cfgRes.value) {
+          const cfg = cfgRes.value;
+          setConfig(cfg);
+          if (cfg.default_engine) setDefaultEngine(cfg.default_engine);
+          if (Array.isArray(cfg.folders)) setFolders(cfg.folders);
+        }
+        setMode("live");
+      } catch {
+        enterDemo();
+      }
     })();
     return () => { cancelled = true; };
   }, []);
