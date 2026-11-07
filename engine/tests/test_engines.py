@@ -71,6 +71,36 @@ def test_install_rejects_engines_with_nothing_to_download():
         engines.install("camoufox")
 
 
+
+def test_camoufox_status_checks(monkeypatch):
+    from persona import drivers
+    import sys
+
+    # Case 1: find_spec says installed, but importing camoufox.sync_api fails
+    monkeypatch.setattr(drivers, "is_installed", lambda name: True if name == "camoufox" else False)
+    monkeypatch.setitem(sys.modules, "camoufox.sync_api", None)  # triggers ImportError
+    st = engines.status()
+    assert st["camoufox"]["installed"] is False
+    assert st["camoufox"]["ready"] is False
+
+    # Case 2: importable, and camoufox_ready is True
+    import types
+    fake_root = types.ModuleType("camoufox")
+    fake_mod = types.ModuleType("camoufox.sync_api")
+    fake_root.sync_api = fake_mod
+    monkeypatch.setitem(sys.modules, "camoufox", fake_root)
+    monkeypatch.setitem(sys.modules, "camoufox.sync_api", fake_mod)
+    monkeypatch.setattr(engines, "camoufox_ready", lambda: True)
+    st2 = engines.status()
+    assert st2["camoufox"]["installed"] is True
+    assert st2["camoufox"]["ready"] is True
+
+    # Case 3: importable, but binary missing (camoufox_ready is False)
+    monkeypatch.setattr(engines, "camoufox_ready", lambda: False)
+    st3 = engines.status()
+    assert st3["camoufox"]["installed"] is True
+    assert st3["camoufox"]["ready"] is False
+
 # ---- dashboard API ----------------------------------------------------------------
 
 FAKE_INSTALL = (

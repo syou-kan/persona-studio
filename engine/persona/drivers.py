@@ -441,7 +441,8 @@ def _locked(fn: Callable) -> Callable:
             lock.release()
         try:
             procs.end_browsers(user_data)
-            prefetch_geo(profile)
+            if getattr(profile, "engine", "playwright") != "camoufox":
+                prefetch_geo(profile)
             handles = fn(profile, store, *args, keep_open=keep_open, **kwargs)
         except BaseException:
             done()
@@ -475,10 +476,11 @@ def session(profile: Profile, store, engine: Optional[str] = None,
     if name == "camoufox":
         # Camoufox's driver is launch-and-wait only, so open it directly.
         from camoufox.sync_api import Camoufox
-        lock = locks.acquire(store.user_data_path(profile.id))
+        user_data = store.user_data_path(profile.id)
+        lock = locks.acquire(user_data)
+        kwargs = _camoufox_launch_kwargs(profile, user_data, headless)
         try:
-            with Camoufox(headless=headless, persistent_context=True,
-                          user_data_dir=str(store.user_data_path(profile.id))) as browser:
+            with Camoufox(**kwargs) as browser:
                 yield browser
         finally:
             lock.release()
@@ -594,6 +596,28 @@ def _driver_patchright(profile, store, headless=False, keep_open=True, extra_arg
                                    engine="patchright")
 
 
+def _camoufox_launch_kwargs(profile: Profile, user_data: Path, headless: bool,
+                            own_args: Optional[list[str]] = None) -> dict:
+    fp = profile.fingerprint
+    os_hint = {"windows": "windows", "macos": "macos", "linux": "linux"}.get(fp.os, "windows")
+    kwargs: dict = {
+        "headless": headless,
+        "os": os_hint,
+        "locale": fp.locale,
+        "persistent_context": True,
+        "user_data_dir": str(user_data),
+        # Same device every launch (Camoufox would otherwise re-roll it).
+        "fingerprint": camoufox_fingerprint(profile, user_data),
+        "i_know_what_im_doing": True,   # silences the custom-fingerprint warning
+    }
+    if own_args:
+        kwargs["args"] = own_args            # Firefox flags, for this engine
+    if profile.proxy:
+        kwargs["proxy"] = browser_proxy(profile.proxy).to_playwright()
+        kwargs["geoip"] = True  # align timezone/locale to the proxy exit IP
+    return kwargs
+
+
 @register("camoufox", requires="camoufox")
 def _driver_camoufox(profile, store, headless=False, keep_open=True, extra_args=None):
     """Camoufox (patched Firefox) generates its own coherent fingerprint; we feed
@@ -605,26 +629,9 @@ def _driver_camoufox(profile, store, headless=False, keep_open=True, extra_args=
         )
     from camoufox.sync_api import Camoufox
 
-    fp = profile.fingerprint
-    os_hint = {"windows": "windows", "macos": "macos", "linux": "linux"}.get(fp.os, "windows")
     user_data = store.user_data_path(profile.id)
-    kwargs: dict = {
-        "headless": headless,
-        "os": os_hint,
-        "locale": fp.locale,
-        "persistent_context": True,
-        "user_data_dir": str(user_data),
-        # Same device every launch (Camoufox would otherwise re-roll it).
-        "fingerprint": camoufox_fingerprint(profile, user_data),
-        "i_know_what_im_doing": True,   # silences the custom-fingerprint warning
-    }
     own_args = profile_launch_args(profile)[0]
-    if own_args:
-        kwargs["args"] = own_args            # Firefox flags, for this engine
-    if profile.proxy:
-        kwargs["proxy"] = browser_proxy(profile.proxy).to_playwright()
-        kwargs["geoip"] = True  # align timezone/locale to the proxy exit IP
-
+    kwargs = _camoufox_launch_kwargs(profile, user_data, headless, own_args)
     with Camoufox(**kwargs) as browser:
         page = browser.pages[0] if getattr(browser, "pages", None) else browser.new_page()
         _open_startup_urls(browser, page, profile)

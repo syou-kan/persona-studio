@@ -29,7 +29,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Optional
 
 from . import devices
-from .bridge import browser_proxy
+from .bridge import browser_proxy, http_proxy
 from .models import Profile
 
 # Echo services that report the caller's IP *with* timezone + coordinates.
@@ -63,6 +63,12 @@ def lookup_exit(proxy, timeout: float = 8) -> Optional[dict]:
     Returns ``{ip, timezone, lat, lon, country, city}`` or ``None``. SOCKS
     proxies return ``None`` for now — urllib can't speak SOCKS (the local proxy
     bridge will route them through HTTP)."""
+    if proxy is None:
+        return None
+    try:
+        proxy = http_proxy(proxy)
+    except Exception:
+        return None
     if proxy is None or proxy.server.lower().startswith("socks"):
         return None
     host = proxy.server.split("://", 1)[-1]
@@ -135,7 +141,7 @@ def _key(profile: Profile) -> tuple:
 def _resolve(key: tuple, proxy, lookup) -> Optional[dict]:
     # Through the bridge when the browser needs one (SOCKS + auth), so the
     # lookup leaves from exactly where the browser's traffic does.
-    info = lookup(browser_proxy(proxy))
+    info = lookup(http_proxy(proxy))
     _cache[key] = (time.time(), info)
     return info
 

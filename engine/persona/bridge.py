@@ -227,3 +227,20 @@ def browser_proxy(proxy: Optional[Proxy]) -> Optional[Proxy]:
     if not needs_bridge(proxy):
         return proxy
     return replace(proxy, server=bridge_for(proxy).url, username=None, password=None)
+
+
+def http_proxy(proxy: Optional[Proxy]) -> Optional[Proxy]:
+    """Return an HTTP-compatible proxy for urllib callers (bridges all SOCKS schemes)."""
+    if not proxy:
+        return None
+    if _scheme(proxy) in ("socks4", "socks4a", "socks5", "socks5h"):
+        try:
+            b = bridge_for(proxy)
+            return Proxy(
+                server=f"http://127.0.0.1:{b.port}",
+                country=proxy.country,
+                change_ip_url=proxy.change_ip_url,
+            )
+        except Exception:
+            return None
+    return proxy

@@ -137,3 +137,19 @@ def test_bad_credentials_surface_as_502(socks):
         _fetch(b.url, "http://origin.test/")
     assert e.value.code == 502 and b"authentication failed" in e.value.read()
     b.close()
+
+
+def test_http_proxy():
+    assert bridge.http_proxy(None) is None
+
+    http_px = Proxy(server="http://example.com:8080")
+    assert bridge.http_proxy(http_px) is http_px
+
+    unauth_socks = Proxy(server="socks5://127.0.0.1:1080", country="US", change_ip_url="http://change.ip")
+    bridged = bridge.http_proxy(unauth_socks)
+    assert bridged is not None
+    assert bridged.server.startswith("http://127.0.0.1:")
+    b = bridge.bridge_for(unauth_socks)
+    assert bridged.server == f"http://127.0.0.1:{b.port}"
+    assert bridged.country == "US"
+    assert bridged.change_ip_url == "http://change.ip"

@@ -84,6 +84,15 @@ def cloak_ready() -> bool:
         return False
 
 
+def camoufox_ready() -> bool:
+    try:
+        import camoufox.pkgman
+        path = camoufox.pkgman.camoufox_path(download_if_missing=False)
+        return bool(path and Path(path).exists())
+    except Exception:
+        return False
+
+
 def status() -> dict:
     """Per engine: is its package installed, and is its browser downloaded?"""
     from . import drivers
@@ -94,8 +103,18 @@ def status() -> dict:
             ready = installed and cloak_ready()
         elif name in ("playwright", "patchright"):
             ready = installed and chromium_ready()
+        elif name == "camoufox":
+            if installed:
+                try:
+                    import camoufox.sync_api  # noqa: F401
+                    ready = camoufox_ready()
+                except Exception:
+                    installed = False
+                    ready = False
+            else:
+                ready = False
         else:
-            ready = installed                  # Camoufox: fetched with `camoufox fetch`
+            ready = installed
         out[name] = {"installed": installed, "ready": ready,
                      "downloadMB": 0 if ready else DOWNLOAD_MB.get(name, 0)}
     return out

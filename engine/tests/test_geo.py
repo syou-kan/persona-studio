@@ -64,6 +64,55 @@ def test_socks_proxy_is_not_looked_up_directly():
     assert geo.lookup_exit(Proxy(server="socks5://h:1")) is None
 
 
+def test_lookup_exit_handles_socks5_proxy(monkeypatch):
+    captured = {}
+
+    class DummyResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self):
+            return (b'{"ip": "203.0.113.7", "country_code": "US", "city": "Chicago", '
+                    b'"latitude": 41.88, "longitude": -87.63, "timezone": "America/Chicago"}')
+
+    class DummyOpener:
+        def __init__(self, handlers):
+            self.handlers = handlers
+            self.addheaders = []
+
+        def open(self, url, timeout=None):
+            captured["url"] = url
+            return DummyResponse()
+
+    def fake_build_opener(*handlers):
+        captured["handlers"] = handlers
+        return DummyOpener(handlers)
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
+
+    px = Proxy(server="socks5://127.0.0.1:1080")
+    info = geo.lookup_exit(px)
+    assert info is not None
+    assert info["ip"] == "203.0.113.7"
+    assert info["timezone"] == "America/Chicago"
+    proxy_handler = next(h for h in captured["handlers"] if isinstance(h, urllib.request.ProxyHandler))
+    assert proxy_handler.proxies["http"].startswith("http://127.0.0.1:")
+
+
+def test_resolve_bridges_socks_for_lookup():
+    received = []
+    p = Profile(name="p", fingerprint=generate(seed=1, locale="en-US"),
+                proxy=Proxy(server="socks5://127.0.0.1:1080"))
+    res = geo.launch_geo(p, lookup=lambda px: received.append(px) or CHICAGO)
+    assert res["source"] == "exit-ip"
+    assert len(received) == 1
+    assert received[0].server.startswith("http://127.0.0.1:")
+
+
 def test_parses_both_echo_services():
     ipwho = {"ip": "1.2.3.4", "success": True, "country_code": "us", "city": "X",
              "latitude": 1, "longitude": 2, "timezone": {"id": "America/Denver"}}
