@@ -6,8 +6,8 @@ These don't need FastAPI installed — to_engine_profile / dashboard_coherence
 live at module level and only touch the engine core.
 """
 
-from persona import validate
-from persona.server import to_engine_profile, dashboard_coherence
+from persona import devices, validate
+from persona.server import to_engine_profile, to_dashboard_profile, dashboard_coherence
 
 
 BASE = {
@@ -120,3 +120,72 @@ def test_folder_crud_and_rename_edge_cases(tmp_path):
     r = client.delete("/api/folders/Beta")
     assert r.status_code == 200
     assert r.json()["folders"] == ["AlphaRenamed", "NewFolder"]
+
+
+def test_roundtrip_seed_and_font_preservation():
+    p1 = to_engine_profile(BASE)
+    assert p1.fingerprint.seed > 0
+    assert isinstance(p1.fingerprint.fonts, list) and len(p1.fingerprint.fonts) > 0
+
+    d1 = to_dashboard_profile(p1)
+    assert d1.get("seed") == p1.fingerprint.seed
+    assert d1.get("fontList") == list(p1.fingerprint.fonts)
+
+    p2 = to_engine_profile(d1)
+    assert p2.fingerprint.seed == p1.fingerprint.seed
+    assert p2.fingerprint.fonts == p1.fingerprint.fonts
+
+    d2 = to_dashboard_profile(p2)
+    assert d2["seed"] == d1["seed"]
+    assert d2["fontList"] == d1["fontList"]
+
+
+def test_explicit_font_subset_preservation():
+    # Valid subset of devices.FONTS["windows"]: keep that exact subset
+    win_fonts = devices.FONTS["windows"]
+    valid_subset = [win_fonts[0], win_fonts[2]]
+    prof_valid = to_engine_profile(dict(BASE, fontList=valid_subset))
+    assert prof_valid.fingerprint.fonts == valid_subset
+
+    # Invalid/unknown fonts: fall back to seeded generator fonts
+    prof_invalid = to_engine_profile(dict(BASE, fontList=["NonExistentFont123", win_fonts[0]]))
+    assert prof_invalid.fingerprint.fonts != ["NonExistentFont123", win_fonts[0]]
+    assert set(prof_invalid.fingerprint.fonts) <= set(win_fonts)
+    assert len(prof_invalid.fingerprint.fonts) > 0
+
+
+def test_spoofing_modes_roundtrip():
+    payload = dict(
+        BASE,
+        canvas="Block",
+        webrtc="Disabled",
+        audio="Real",
+        fonts="Real",
+        webglMode="Real",
+        geo="Block",
+    )
+    prof = to_engine_profile(payload)
+    fp = prof.fingerprint
+    assert fp.canvas_mode == "Block"
+    assert fp.webrtc_mode == "Disabled"
+    assert fp.audio_mode == "Real"
+    assert fp.fonts_mode == "Real"
+    assert fp.webgl_mode == "Real"
+    assert fp.geo_mode == "Block"
+
+    dash = to_dashboard_profile(prof)
+    assert dash["canvas"] == "Block"
+    assert dash["webrtc"] == "Disabled"
+    assert dash["audio"] == "Real"
+    assert dash["fonts"] == "Real"
+    assert dash["webglMode"] == "Real"
+    assert dash["geo"] == "Block"
+
+    # And round-trips back to engine identically
+    prof2 = to_engine_profile(dash)
+    assert prof2.fingerprint.canvas_mode == "Block"
+    assert prof2.fingerprint.webrtc_mode == "Disabled"
+    assert prof2.fingerprint.audio_mode == "Real"
+    assert prof2.fingerprint.fonts_mode == "Real"
+    assert prof2.fingerprint.webgl_mode == "Real"
+    assert prof2.fingerprint.geo_mode == "Block"

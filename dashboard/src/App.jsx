@@ -60,6 +60,14 @@ const WARMUP_PRESETS = [
 const OS_LIST = ["Windows", "macOS", "Linux", "Android"];
 // Exactly what a current Chrome reports (ANGLE): the string goes to the
 // browser as-is, so a label of our own would be a tell.
+const ANDROID_DEVICES = [
+  { model: "Pixel 7", android: "13", screen: "412x915", cores: 8, memory: 8, webglVendor: "Google Inc. (ARM)", webglRenderer: "ANGLE (ARM, Mali-G710, OpenGL ES 3.2)" },
+  { model: "Pixel 8", android: "14", screen: "412x915", cores: 9, memory: 8, webglVendor: "Google Inc. (ARM)", webglRenderer: "ANGLE (ARM, Mali-G715, OpenGL ES 3.2)" },
+  { model: "Pixel 6", android: "13", screen: "393x851", cores: 8, memory: 8, webglVendor: "Google Inc. (ARM)", webglRenderer: "ANGLE (ARM, Mali-G78, OpenGL ES 3.2)" },
+  { model: "SM-G991B", android: "13", screen: "360x800", cores: 8, memory: 8, webglVendor: "Google Inc. (ARM)", webglRenderer: "ANGLE (ARM, Mali-G78, OpenGL ES 3.2)" },
+  { model: "SM-S908B", android: "14", screen: "384x854", cores: 8, memory: 12, webglVendor: "Google Inc. (Qualcomm)", webglRenderer: "ANGLE (Qualcomm, Adreno (TM) 730, OpenGL ES 3.2)" },
+  { model: "M2101K6G", android: "13", screen: "393x873", cores: 8, memory: 6, webglVendor: "Google Inc. (ARM)", webglRenderer: "ANGLE (ARM, Mali-G77 MC9, OpenGL ES 3.2)" },
+];
 const GPUS = {
   Windows: [
     "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
@@ -78,17 +86,17 @@ const GPUS = {
   ],
   Android: [
     "ANGLE (Qualcomm, Adreno (TM) 660, OpenGL ES 3.2)",
-    "ANGLE (ARM, Mali-G78, OpenGL ES 3.2)",
+    ...new Set(ANDROID_DEVICES.map(d => d.webglRenderer)),
   ],
 };
 const SCREENS = {
-  Windows: ["1920x1080", "1366x768", "2560x1440", "1536x864"],
-  macOS: ["2560x1600", "1440x900", "1728x1117"],
-  Linux: ["1920x1080", "1366x768"],
-  Android: ["360x800", "393x873", "412x915"],
+  Windows: ["1920x1080", "1366x768", "2560x1440", "1536x864", "1600x900"],
+  macOS: ["2560x1600", "1440x900", "1728x1117", "1512x982"],
+  Linux: ["1920x1080", "1366x768", "2560x1440"],
+  Android: ["360x800", "393x873", "412x915", "384x854", "393x851"],
 };
-const CORES = { Windows: [4, 6, 8, 12, 16], macOS: [8, 10, 12], Linux: [4, 8, 16], Android: [6, 8] };
-const RAM = { Windows: [8, 16, 32], macOS: [8, 16, 32], Linux: [8, 16], Android: [4, 6, 8] };
+const CORES = { Windows: [4, 6, 8, 12, 16], macOS: [8, 10, 12], Linux: [4, 8, 16], Android: [6, 8, 9] };
+const RAM = { Windows: [4, 8, 16, 32], macOS: [8, 16, 32], Linux: [8, 16], Android: [4, 6, 8, 12] };
 const LOCALES = {
   "en-US": "America/New_York", "en-GB": "Europe/London", "en-PK": "Asia/Karachi",
   "en-IN": "Asia/Kolkata", "de-DE": "Europe/Berlin", "fr-FR": "Europe/Paris",
@@ -97,7 +105,8 @@ const LOCALES = {
 const COUNTRY_LOCALE = { US: "en-US", GB: "en-GB", PK: "en-PK", IN: "en-IN", DE: "de-DE", FR: "fr-FR", ES: "es-ES", TR: "tr-TR", JP: "ja-JP" };
 const MODES = {
   canvas: ["Noise", "Block", "Real"], webrtc: ["Altered", "Disabled", "Real"],
-  audio: ["Noise", "Real"], fonts: ["Masked", "Real"], geo: ["Prompt", "Allow", "Block"],
+  audio: ["Noise", "Real"], fonts: ["Masked", "Real"],
+  webglMode: ["Altered", "Real"], geo: ["Prompt", "Allow", "Block"],
 };
 
 /* ---- launch engines (mirrors persona/drivers.py) ----------------- */
@@ -210,16 +219,18 @@ function mk(name, folder, status, os, tags, country) {
     screen: SCREENS[os][0], cores: CORES[os][1], memory: RAM[os][1],
     webglVendor: os === "macOS" ? "Google Inc. (Apple)" : "Google Inc. (NVIDIA)",
     webglRenderer: GPUS[os][0],
-    canvas: "Noise", webrtc: "Altered", audio: "Noise", fonts: "Masked",
-    locale, timezone: LOCALES[locale], geo: "Prompt",
+    canvas: "Noise", webrtc: "Altered", audio: "Real", fonts: "Masked", webglMode: "Altered",
+    locale, timezone: LOCALES[locale], geo: "Allow",
     mediaVideo: 1, mediaAudio: 1, dnt: false,
     proxy: country ? { type: "HTTP", host: "res-" + country.toLowerCase() + ".proxy.io", port: "8080", user: "u" + name.length, pass: "•••••", country } : null,
     notes: "", startupUrls: "", extensions: "",
     lastActive: status === "running" ? "now" : ["2h ago", "yesterday", "3d ago"][name.length % 3],
   };
 }
-function uaFor(os, chrome = "151.0.0.0") {
-  const tok = { Windows: "Windows NT 10.0; Win64; x64", macOS: "Macintosh; Intel Mac OS X 10_15_7", Linux: "X11; Linux x86_64", Android: "Linux; Android 13; Pixel 7" }[os];
+function uaFor(os, chrome = "151.0.0.0", androidToken = null) {
+  const tok = os === "Android" && androidToken
+    ? androidToken
+    : { Windows: "Windows NT 10.0; Win64; x64", macOS: "Macintosh; Intel Mac OS X 10_15_7", Linux: "X11; Linux x86_64", Android: "Linux; Android 13; Pixel 7" }[os];
   const mob = os === "Android" ? " Mobile" : "";
   return `Mozilla/5.0 (${tok}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chrome}${mob} Safari/537.36`;
 }
@@ -241,7 +252,28 @@ const MANAGED_FLAGS = Object.fromEntries(Object.entries({
   "it would change the identity the profile presents": ["--user-agent", "--lang", "--accept-lang", "--window-size", "--force-device-scale-factor", "--disable-blink-features", "--enable-blink-features", "--use-angle", "--use-gl"],
   "Persona sets the WebRTC policy": ["--force-webrtc-ip-handling-policy", "--webrtc-ip-handling-policy"],
   "it turns off the browser's sandbox": ["--no-sandbox"],
-  "Persona passes the profile's identity to CloakBrowser": ["--fingerprint", "--fingerprint-platform", "--fingerprint-hardware-concurrency", "--fingerprint-device-memory", "--fingerprint-screen-width", "--fingerprint-screen-height", "--fingerprint-gpu-vendor", "--fingerprint-gpu-renderer", "--fingerprint-webrtc-ip"],
+  "Persona passes the profile's identity to CloakBrowser": [
+    "--fingerprint",
+    "--fingerprint-platform",
+    "--fingerprint-platform-version",
+    "--fingerprint-brand",
+    "--fingerprint-brand-version",
+    "--fingerprint-hardware-concurrency",
+    "--fingerprint-device-memory",
+    "--fingerprint-screen-width",
+    "--fingerprint-screen-height",
+    "--fingerprint-gpu-vendor",
+    "--fingerprint-gpu-renderer",
+    "--fingerprint-webrtc-ip",
+    "--fingerprint-storage-quota",
+    "--fingerprint-noise",
+    "--fingerprint-max-touch-points",
+    "--fingerprint-taskbar-height",
+    "--fingerprint-windows-font-metrics",
+    "--fingerprint-sapi-voices",
+    "--fingerprint-timezone",
+    "--fingerprint-locale",
+  ],
 }).flatMap(([why, flags]) => flags.map(f => [f, why])));
 function flagProblems(text) {
   return (text || "").split("\n").map(l => l.trim()).filter(Boolean).flatMap(arg => {
@@ -312,13 +344,29 @@ const CHROME_VERSIONS = ["148.0.0.0", "149.0.0.0", "150.0.0.0", "151.0.0.0"];   
 // original. (In live mode the server does this; this mirrors it for demo mode.)
 function freshDevice(os, locale = "en-US") {
   const rnd = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  const seed = Math.floor(Math.random() * 2147483646) + 1;
   const chrome = rnd(CHROME_VERSIONS);
+  const tz = LOCALES[locale] || LOCALES["en-US"];
+  if (os === "Android") {
+    const dev = rnd(ANDROID_DEVICES);
+    const tok = `Linux; Android ${dev.android}; ${dev.model}`;
+    return {
+      browserVersion: chrome, userAgent: uaFor(os, chrome, tok),
+      screen: dev.screen, cores: dev.cores, memory: dev.memory,
+      webglVendor: dev.webglVendor, webglRenderer: dev.webglRenderer,
+      mediaVideo: 2, mediaAudio: 1,
+      locale, timezone: tz, seed,
+    };
+  }
   const gpu = rnd(GPUS[os]);
+  const cameras = rnd([0, 1, 1, 1, 2]);
+  const microphones = cameras ? rnd([0, 1, 1, 1, 2]) : rnd([0, 1]);
   return {
     browserVersion: chrome, userAgent: uaFor(os, chrome),
     screen: rnd(SCREENS[os]), cores: rnd(CORES[os]), memory: rnd(RAM[os]),
     webglVendor: vendorFor(gpu), webglRenderer: gpu,
-    locale, timezone: LOCALES[locale] || LOCALES["en-US"],
+    mediaVideo: cameras, mediaAudio: microphones,
+    locale, timezone: tz, seed,
   };
 }
 
@@ -1131,12 +1179,10 @@ function newProfile(folder, defaultEngine = ENGINE_ORDER[0]) {
   const os = "Windows";
   return {
     id: nid(), name: "", folder: folder === "All profiles" ? "Facebook Ads" : folder,
-    status: "stopped", os, tags: [], engine: defaultEngine, browser: "Chrome", browserVersion: "151.0.0.0",
-    userAgent: uaFor(os), screen: SCREENS[os][0], cores: CORES[os][1], memory: RAM[os][1],
-    webglVendor: "Google Inc. (NVIDIA)", webglRenderer: GPUS[os][0],
-    canvas: "Noise", webrtc: "Altered", audio: "Noise", fonts: "Masked",
-    locale: "en-US", timezone: "America/New_York", geo: "Prompt",
-    mediaVideo: 1, mediaAudio: 1, dnt: false, proxy: null, notes: "", startupUrls: "", extensions: "",
+    status: "stopped", os, tags: [], engine: defaultEngine, browser: "Chrome",
+    ...freshDevice(os),
+    canvas: "Noise", webrtc: "Altered", audio: "Real", fonts: "Masked", webglMode: "Altered",
+    geo: "Allow", dnt: false, proxy: null, notes: "", startupUrls: "", extensions: "",
     lastActive: "never", _new: true,
   };
 }
@@ -1221,7 +1267,7 @@ function Editor({ profile, live, folders = [], onClose, onSave }) {
   }, [live]);
 
   const set = (patch) => setP(x => ({ ...x, ...patch }));
-  const changeOS = (os) => set({ os, userAgent: uaFor(os), screen: SCREENS[os][0], cores: CORES[os][1], memory: RAM[os][1], webglRenderer: GPUS[os][0], webglVendor: vendorFor(GPUS[os][0]) });
+  const changeOS = (os) => set({ os, ...freshDevice(os, p.locale), webglTable: undefined });
   const changeLocale = (locale) => set({ locale, timezone: LOCALES[locale] });
   const setProxy = (patch) => set({ proxy: { ...(p.proxy || { type: "HTTP", host: "", port: "", user: "", pass: "", country: "" }), ...patch } });
 
@@ -1467,6 +1513,7 @@ function Editor({ profile, live, folders = [], onClose, onSave }) {
               <SectionLabel icon={<Fingerprint size={13} />} text="Spoofing modes" />
               <Row><Pick label="Canvas" opts={MODES.canvas} val={p.canvas} on={v => set({ canvas: v })} /><Pick label="WebRTC" opts={MODES.webrtc} val={p.webrtc} on={v => set({ webrtc: v })} /></Row>
               <Row><Pick label="Audio context" opts={MODES.audio} val={p.audio} on={v => set({ audio: v })} /><Pick label="Fonts" opts={MODES.fonts} val={p.fonts} on={v => set({ fonts: v })} /></Row>
+              <Row><Pick label="WebGL / GPU" opts={MODES.webglMode} val={p.webglMode || "Altered"} on={v => set({ webglMode: v })} /></Row>
 
               <SectionLabel icon={<Globe size={13} />} text="Geo & language" />
               <Row>
@@ -2114,18 +2161,46 @@ function BulkModal({ onClose, onCreate, folder, defaultEngine }) {
       const os = oses[i % oses.length];
       const country = countries[Math.floor(i / oses.length) % countries.length];
       const chrome = rnd(browsers) || "151.0.0.0";
-      const gpu = pick(GPUS[os]);
       const locale = COUNTRY_LOCALE[country] || "en-US";
+      const seed = Math.floor(Math.random() * 2147483646) + 1;
+      let devProps;
+      if (os === "Android") {
+        const dev = randomize ? rnd(ANDROID_DEVICES) : ANDROID_DEVICES[0];
+        const tok = `Linux; Android ${dev.android}; ${dev.model}`;
+        devProps = {
+          userAgent: uaFor(os, chrome, tok),
+          screen: dev.screen,
+          cores: dev.cores,
+          memory: dev.memory,
+          webglVendor: dev.webglVendor,
+          webglRenderer: dev.webglRenderer,
+          mediaVideo: 2,
+          mediaAudio: 1,
+        };
+      } else {
+        const gpu = pick(GPUS[os]);
+        const cameras = randomize ? rnd([0, 1, 1, 1, 2]) : 1;
+        const microphones = cameras ? (randomize ? rnd([0, 1, 1, 1, 2]) : 1) : (randomize ? rnd([0, 1]) : 0);
+        devProps = {
+          userAgent: uaFor(os, chrome),
+          screen: pick(SCREENS[os]),
+          cores: pick(CORES[os], CORES[os][1]),
+          memory: pick(RAM[os], RAM[os][1]),
+          webglVendor: vendorFor(gpu),
+          webglRenderer: gpu,
+          mediaVideo: cameras,
+          mediaAudio: microphones,
+        };
+      }
       list[i] = {
         name: `${prefix}-${String(start + i).padStart(pad, "0")}`,
         folder: folder === "All profiles" ? "Facebook Ads" : folder,
         status: "stopped", os, tags, engine, browser: "Chrome", browserVersion: chrome,
-        userAgent: uaFor(os, chrome), screen: pick(SCREENS[os]),
-        cores: pick(CORES[os], CORES[os][1]), memory: pick(RAM[os], RAM[os][1]),
-        webglVendor: vendorFor(gpu), webglRenderer: gpu,
+        ...devProps,
         canvas: "Noise", webrtc: "Altered", audio: "Noise", fonts: "Masked",
-        locale, timezone: LOCALES[locale], geo: "Prompt", mediaVideo: 1, mediaAudio: 1, dnt: false,
-        proxy: null,   // real proxies are attached from the pool (Proxies → Assign)
+        locale, timezone: LOCALES[locale], geo: "Prompt", dnt: false,
+        seed,
+        proxy: null,
         notes: "", startupUrls: "", extensions: "", lastActive: "never", _new: true,
       };
     }

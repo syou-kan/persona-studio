@@ -182,3 +182,28 @@ def test_generated_macos_profiles_use_current_metal_strings():
         fp = generate(os="macos", seed=seed)
         assert "Metal Renderer" in fp.webgl_renderer
         assert validate(fp) == []
+
+
+def test_stealth_hardening_init_script():
+    from persona.stealth import build_init_script
+    # Desktop Windows profile
+    fp_desktop = generate(os="windows", seed=42)
+    fp_desktop.audio_mode = "Real"
+    fp_desktop.canvas_mode = "Noise"
+    fp_desktop.webgl_mode = "Altered"
+    fp_desktop.fonts_mode = "Masked"
+
+    script = build_init_script(fp_desktop)
+    assert "maxTouchPoints" in script
+    assert '"maxTouchPoints": 0' in script
+    assert '"audioMode": "Real"' in script
+    assert '"canvasMode": "Noise"' in script
+    assert '"webglMode": "Altered"' in script
+    assert '"fontsMode": "Masked"' in script
+    assert "GPUAdapter" in script
+    assert "navigator.storage.estimate" in script
+
+    # Mobile Android profile
+    fp_mobile = generate(os="android", seed=42, mobile=True)
+    script_mobile = build_init_script(fp_mobile)
+    assert '"maxTouchPoints": 5' in script_mobile

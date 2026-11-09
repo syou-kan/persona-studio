@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace
@@ -85,11 +86,16 @@ def _open_startup_urls(context, page, profile: Profile) -> None:
             continue  # unreachable site / typo — don't crash the session
 
 
-def _webrtc_arg(profile: Profile) -> list[str]:
+def _webrtc_arg(profile: Profile, *, cloak_webrtc_spoofed: bool = False) -> list[str]:
     """Stop WebRTC from leaking the real IP. With a proxy, force everything
     through it (or don't send UDP at all); otherwise expose only the public
     interface so local addresses stay hidden."""
-    if profile.proxy:
+    mode = getattr(profile.fingerprint, "webrtc_mode", "Altered")
+    if mode == "Real":
+        return []
+    if mode == "Disabled":
+        return ["--force-webrtc-ip-handling-policy=disable_non_proxied_udp"]
+    if profile.proxy and not cloak_webrtc_spoofed:
         return ["--force-webrtc-ip-handling-policy=disable_non_proxied_udp"]
     return ["--force-webrtc-ip-handling-policy=default_public_interface_only"]
 
@@ -190,7 +196,13 @@ _MANAGED = {
         ("--fingerprint", "--fingerprint-platform", "--fingerprint-hardware-concurrency",
          "--fingerprint-device-memory", "--fingerprint-screen-width",
          "--fingerprint-screen-height", "--fingerprint-gpu-vendor",
-         "--fingerprint-gpu-renderer", "--fingerprint-webrtc-ip"),
+         "--fingerprint-gpu-renderer", "--fingerprint-webrtc-ip",
+         "--fingerprint-storage-quota", "--fingerprint-noise",
+         "--fingerprint-max-touch-points", "--fingerprint-taskbar-height",
+         "--fingerprint-platform-version", "--fingerprint-brand",
+         "--fingerprint-brand-version", "--fingerprint-windows-font-metrics",
+         "--fingerprint-sapi-voices", "--fingerprint-timezone",
+         "--fingerprint-locale"),
 }
 MANAGED_FLAGS = {flag: why for why, flags in _MANAGED.items() for flag in flags}
 # A flag is one token: dashes, then letters/digits/dashes, then an optional =value.
@@ -289,8 +301,16 @@ def engine_chrome_version(name: str) -> Optional[str]:
     version = None
     try:
         if name == "cloak":
-            from cloakbrowser.config import get_chromium_version
-            version = get_chromium_version()
+            try:
+                from cloakbrowser.config import get_chromium_version, get_effective_version
+                from cloakbrowser.license import resolve_license_key
+                version = get_effective_version(pro=bool(resolve_license_key(None))) or get_chromium_version()
+            except Exception:
+                try:
+                    from cloakbrowser.config import get_chromium_version
+                    version = get_chromium_version()
+                except Exception:
+                    version = None
         elif name in ("playwright", "patchright"):
             spec = importlib.util.find_spec(name)
             if spec and spec.origin:
@@ -346,9 +366,29 @@ def cloak_identity_args(profile: Profile, user_data_dir) -> list[str]:
         f"--fingerprint-screen-width={fp.screen_width}",
         f"--fingerprint-screen-height={fp.screen_height}",
     ]
-    if fp.webgl_vendor and fp.webgl_renderer:
+    quota_mb = 122880 + ((fp.seed or 1) % 389120)
+    args.append(f"--fingerprint-storage-quota={quota_mb}")
+    if fp.os == "windows":
+        args.append("--fingerprint-taskbar-height=48")
+    if fp.os in ("windows", "macos", "linux"):
+        args.append("--fingerprint-max-touch-points=0")
+    if getattr(fp, "audio_mode", "Real") == "Real" or getattr(fp, "canvas_mode", "Noise") in ("Real", "Block"):
+        args.append("--fingerprint-noise=false")
+    if getattr(fp, "webgl_mode", "Altered") != "Real" and fp.webgl_vendor and fp.webgl_renderer:
         args += [f"--fingerprint-gpu-vendor={fp.webgl_vendor}",
                  f"--fingerprint-gpu-renderer={fp.webgl_renderer}"]
+    if fp.os in ("windows", "macos", "linux"):
+        args.append(f"--fingerprint-platform-version={_CH_PLATFORM_VERSION.get(fp.os, '10.0.0')}")
+    args.append("--fingerprint-brand=Google Chrome")
+    args.append(f"--fingerprint-brand-version={fp.chrome_version}")
+    if fp.os == "windows" and getattr(fp, "fonts_mode", "Masked") == "Masked":
+        args.append("--fingerprint-windows-font-metrics=true")
+    if fp.os == "windows":
+        args.append("--fingerprint-sapi-voices=true")
+    if fp.timezone:
+        args.append(f"--fingerprint-timezone={fp.timezone}")
+    if fp.locale:
+        args.append(f"--fingerprint-locale={fp.locale}")
     return args
 
 
@@ -549,11 +589,11 @@ def _launch_playwright_like(sync_playwright, profile: Profile, store, headless: 
     }
     if profile.proxy:
         context_opts["proxy"] = browser_proxy(profile.proxy).to_playwright()
-    if geolocation:
-        # Grant the permission too, so a site that asks gets the coordinates
-        # rather than a prompt that would stall an unattended session.
+    geo_mode = getattr(fp, "geo_mode", "Allow")
+    if geolocation and geo_mode != "Block":
         context_opts["geolocation"] = geolocation
-        context_opts["permissions"] = ["geolocation"]
+        if geo_mode == "Allow" or headless:
+            context_opts["permissions"] = ["geolocation"]
 
     context = pw.chromium.launch_persistent_context(
         user_data_dir=str(store.user_data_path(profile.id)),
@@ -668,12 +708,32 @@ def _driver_cloak(profile, store, headless=False, keep_open=True, extra_args=Non
                     if headless else {"no_viewport": True})
     geo = launch_geo(profile)
     geo_opts: dict = {}
-    if geo["geolocation"]:
-        # Without this a granted prompt would hand the site the host's real fix.
-        geo_opts = {"geolocation": geo["geolocation"], "permissions": ["geolocation"]}
+    geo_mode = getattr(fp, "geo_mode", "Allow")
+    if geo["geolocation"] and geo_mode != "Block":
+        geo_opts["geolocation"] = geo["geolocation"]
+        if geo_mode == "Allow" or headless:
+            geo_opts["permissions"] = ["geolocation"]
     # We resolved the exit IP ourselves: hand it to WebRTC directly. Only when we
     # couldn't (e.g. SOCKS) let CloakBrowser try its own lookup for WebRTC.
     webrtc_ip = [f"--fingerprint-webrtc-ip={geo['ip']}"] if geo["ip"] else []
+    cloak_args = cloak_identity_args(profile, user_data)
+    if geo.get("timezone") and geo["timezone"] != fp.timezone:
+        tz_flag = f"--fingerprint-timezone={geo['timezone']}"
+        replaced = False
+        for idx, arg in enumerate(cloak_args):
+            if arg.startswith("--fingerprint-timezone="):
+                cloak_args[idx] = tz_flag
+                replaced = True
+                break
+        if not replaced:
+            cloak_args.append(tz_flag)
+
+    browser_env = dict(os.environ)
+    if "CLOAKBROWSER_BINARY_PATH" in os.environ:
+        browser_env["CLOAKBROWSER_BINARY_PATH"] = os.environ["CLOAKBROWSER_BINARY_PATH"]
+    if "CLOAKBROWSER_LICENSE_API" in os.environ:
+        browser_env["CLOAKBROWSER_LICENSE_API"] = os.environ["CLOAKBROWSER_LICENSE_API"]
+
     # The first launch downloads CloakBrowser's browser (~560 MB): report it
     # (engines.py), so the dashboard can show progress instead of nothing.
     from . import engines
@@ -686,19 +746,21 @@ def _driver_cloak(profile, store, headless=False, keep_open=True, extra_args=Non
             timezone=geo["timezone"],     # the exit IP's zone, not the stored one
             geoip=bool(profile.proxy) and not geo["ip"],
             **geo_opts,
+            env=browser_env,
             # CloakBrowser launches with --no-sandbox (its stealth args), which makes
             # Chromium show a local "unsupported command-line flag" infobar. --test-type
             # hides that purely-cosmetic bar; it isn't visible to websites (JS can't
             # read command-line flags), so it doesn't affect the fingerprint.
             args=["--test-type", "--no-first-run", "--no-default-browser-check",
-                  *cloak_identity_args(profile, user_data), *webrtc_ip,
+                  "--ignore-gpu-blocklist",
+                  *cloak_args, *webrtc_ip,
                   f"--window-size={fp.viewport_width},{fp.viewport_height}",
                   # Language the way a real Chrome gets it: UI language plus the
                   # Accept-Language list. Playwright's locale emulation would cut
                   # navigator.languages down to the one locale (es-ES, no es/en).
                   f"--lang={launch_languages(profile, geo)[0]}",
                   f"--accept-lang={','.join(launch_languages(profile, geo)[1])}",
-                  *_webrtc_arg(profile), *_dns_lockdown_arg(profile),
+                  *_webrtc_arg(profile, cloak_webrtc_spoofed=bool(webrtc_ip)), *_dns_lockdown_arg(profile),
                   *_extension_args(profile), *profile_launch_args(profile)[0], *(extra_args or [])],
         )
     page = context.pages[0] if context.pages else context.new_page()

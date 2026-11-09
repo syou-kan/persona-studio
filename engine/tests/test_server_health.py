@@ -186,3 +186,85 @@ def test_proxy_check_surfaces_failure(client, monkeypatch):
     monkeypatch.setattr(proxypool, "check", lambda proxy, timeout=12: {"ok": False, "error": "407 Proxy Authentication Required"})
     r = client.post("/api/proxy/check", json={"proxy": {"host": "h", "port": "1"}}).json()
     assert r["ok"] is False and "407" in r["checks"][0]["detail"]
+
+
+def test_create_profile_assigns_and_persists_seed(client):
+    r = client.post("/api/profiles", json={"name": "NoSeed", "os": "Windows"})
+    assert r.status_code == 200
+    created = r.json()
+    assert isinstance(created.get("seed"), int) and created["seed"] > 0
+    assert isinstance(created.get("fontList"), list) and len(created["fontList"]) > 0
+
+    all_profs = client.get("/api/profiles").json()
+    matching = [p for p in all_profs if p["id"] == created["id"]]
+    assert len(matching) == 1
+    persisted = matching[0]
+    assert persisted["seed"] == created["seed"]
+    assert persisted["fontList"] == created["fontList"]
+
+
+def test_batch_create_assigns_and_persists_seeds(client):
+    batch_payload = [{"name": f"BatchNoSeed_{i}", "os": "Windows"} for i in range(5)]
+    r = client.post("/api/profiles/batch", json={"profiles": batch_payload})
+    assert r.status_code == 200
+    batch_res = r.json()
+    assert batch_res["created"] == 5
+    ids = set(batch_res["ids"])
+    assert len(ids) == 5
+
+    all_profs = client.get("/api/profiles").json()
+    created_profs = [p for p in all_profs if p["id"] in ids]
+    assert len(created_profs) == 5
+
+    seeds = set()
+    for cp in created_profs:
+        assert isinstance(cp.get("seed"), int) and cp["seed"] > 0
+        assert isinstance(cp.get("fontList"), list) and len(cp["fontList"]) > 0
+        seeds.add(cp["seed"])
+    assert len(seeds) == 5
+
+
+def _get_app_internals(app):
+    dash = getattr(app.state, "dash", None)
+    materialise = getattr(app.state, "materialise", None)
+    if dash is not None and materialise is not None:
+        return dash, materialise
+    for route in app.routes:
+        fn = getattr(route, "endpoint", None)
+        if fn and fn.__closure__:
+            for cell in fn.__closure__:
+                obj = cell.cell_contents
+                if type(obj).__name__ == "DashboardStore" and dash is None:
+                    dash = obj
+                if callable(obj) and getattr(obj, "__name__", "") == "_materialise" and materialise is None:
+                    materialise = obj
+        if dash and materialise:
+            break
+    return dash, materialise
+
+
+def test_materialise_legacy_profile_without_seed_backfills_and_stabilizes(tmp_path):
+    app = create_app(str(tmp_path), start_scheduler=False)
+    dash, materialise = _get_app_internals(app)
+    assert dash is not None
+    assert materialise is not None
+    app.state.dash = dash
+
+    d = app.state.dash.save({"name": "Legacy", "os": "Windows", "screen": "1920x1080"})
+    pid = d["id"]
+    assert "seed" not in d or not d["seed"]
+    assert "fontList" not in d or not d.get("fontList")
+
+    p1 = materialise(d)
+    saved1 = app.state.dash.get(pid)
+    assert isinstance(saved1.get("seed"), int) and saved1["seed"] > 0
+    assert saved1["seed"] == p1.fingerprint.seed
+    assert isinstance(saved1.get("fontList"), list) and len(saved1["fontList"]) > 0
+    assert saved1["fontList"] == list(p1.fingerprint.fonts)
+
+    p2 = materialise(saved1)
+    saved2 = app.state.dash.get(pid)
+    assert saved2["seed"] == saved1["seed"]
+    assert saved2["fontList"] == saved1["fontList"]
+    assert p2.fingerprint.seed == p1.fingerprint.seed
+    assert p2.fingerprint.fonts == p1.fingerprint.fonts

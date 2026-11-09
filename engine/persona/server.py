@@ -244,6 +244,14 @@ def to_engine_profile(d: dict) -> Profile:
     tz, langs = devices.LOCALES.get(locale, devices.LOCALES["en-US"])
     vendor, renderer = _engine_webgl(os_key, d.get("webglRenderer", ""), d.get("webglVendor", ""))
 
+    seed = int(d.get("seed") or 0) or generate(os=os_key).seed
+    os_font_pool = devices.FONTS.get(os_key, [])
+    raw_fonts = d.get("fontList")
+    if isinstance(raw_fonts, list) and raw_fonts and set(raw_fonts) <= set(os_font_pool):
+        fonts = list(raw_fonts)
+    else:
+        fonts = generate(seed=seed, os=os_key).fonts
+
     fp = Fingerprint(
         os=os_key,
         user_agent=d.get("userAgent") or build_user_agent(
@@ -257,7 +265,7 @@ def to_engine_profile(d: dict) -> Profile:
         viewport_height=vh,
         hardware_concurrency=int(d.get("cores", 8)),
         device_memory=int(d.get("memory", 16)),
-        fonts=devices.FONTS.get(os_key, []),
+        fonts=fonts,
         cameras=int(d.get("mediaVideo", 1)),
         microphones=int(d.get("mediaAudio", 1)),
         webgl_vendor=vendor,
@@ -266,11 +274,17 @@ def to_engine_profile(d: dict) -> Profile:
         timezone=d.get("timezone") or tz,
         languages=langs,
         is_mobile=is_mobile,
-        seed=int(d.get("seed") or 0) or generate(os=os_key).seed,
+        seed=seed,
         # Only an explicit "dpr" pins it; otherwise it follows the OS/screen
         # (so editing the screen in the dashboard keeps the ratio coherent).
         device_scale_factor=float(d.get("dpr") or 0),
         webgl=d.get("webglTable") or {},
+        canvas_mode=d.get("canvas") if d.get("canvas") in ("Noise", "Block", "Real") else "Noise",
+        webrtc_mode=d.get("webrtc") if d.get("webrtc") in ("Altered", "Disabled", "Real") else "Altered",
+        audio_mode=d.get("audio") if d.get("audio") in ("Noise", "Real") else "Real",
+        fonts_mode=d.get("fonts") if d.get("fonts") in ("Masked", "Real") else "Masked",
+        webgl_mode=d.get("webglMode") if d.get("webglMode") in ("Altered", "Real") else "Altered",
+        geo_mode=d.get("geo") if d.get("geo") in ("Prompt", "Allow", "Block") else "Allow",
     )
 
     proxy = None
@@ -346,8 +360,16 @@ def to_dashboard_profile(prof: Profile) -> dict:
         "webglVendor": fp.webgl_vendor,
         "webglRenderer": fp.webgl_renderer,
         "webglTable": fp.webgl or {},
-        "canvas": "Noise", "webrtc": "Altered", "audio": "Noise", "fonts": "Masked",
-        "locale": fp.locale, "timezone": fp.timezone, "geo": "Prompt",
+        "seed": fp.seed,
+        "fontList": list(fp.fonts) if fp.fonts else [],
+        "canvas": fp.canvas_mode,
+        "webrtc": fp.webrtc_mode,
+        "audio": fp.audio_mode,
+        "fonts": fp.fonts_mode,
+        "webglMode": fp.webgl_mode,
+        "locale": fp.locale,
+        "timezone": fp.timezone,
+        "geo": fp.geo_mode,
         "mediaVideo": fp.cameras, "mediaAudio": fp.microphones, "dnt": False,
         "proxy": _proxy_to_dash(prof.proxy),
         "notes": prof.notes or "",
@@ -745,7 +767,10 @@ def create_app(data_dir: Optional[str] = None, start_scheduler: bool = True, *,
         # reads every field) can always render it.
         full = to_dashboard_profile(to_engine_profile({**profile, "id": profile.get("id") or "new"}))
         full["folder"] = "Unfiled"
-        profile = {**full, **{k: v for k, v in profile.items() if v is not None}}
+        merged = {**full, **{k: v for k, v in profile.items() if v is not None}}
+        if not int(merged.get("seed") or 0):
+            merged["seed"] = full["seed"]
+        profile = merged
         _remember_engine(profile)
         saved = dash.save(profile)
         return decorate(saved)
@@ -888,11 +913,20 @@ def create_app(data_dir: Optional[str] = None, start_scheduler: bool = True, *,
         version is first moved to the engine's real one, and the dashboard copy
         follows, so the UI shows the UA the site will actually see."""
         prof = to_engine_profile(d)
+        dirty = False
+        if not int(d.get("seed") or 0):
+            d["seed"] = prof.fingerprint.seed
+            dirty = True
+        if not d.get("fontList") and prof.fingerprint.fonts:
+            d["fontList"] = list(prof.fingerprint.fonts)
+            dirty = True
         from .drivers import sync_engine_version
         engine = d.get("engine") or engine_store.get_default_engine()
         if sync_engine_version(prof, engine):
             d["browserVersion"] = prof.fingerprint.chrome_version
             d["userAgent"] = prof.fingerprint.user_agent
+            dirty = True
+        if dirty:
             dash.save(d)
         engine_store.save(prof)
         return prof
@@ -1057,6 +1091,7 @@ def create_app(data_dir: Optional[str] = None, start_scheduler: bool = True, *,
                         ("webglVendor", "webglVendor"), ("webglRenderer", "webglRenderer"),
                         ("cameras", "mediaVideo"), ("microphones", "mediaAudio"),
                         ("locale", "locale"), ("timezone", "timezone"),
+                        ("fonts", "fontList"),
                         ("webgl", "webglTable")):
             if fp.get(src) is not None:
                 d[dst] = fp[src]
@@ -1155,6 +1190,8 @@ def create_app(data_dir: Optional[str] = None, start_scheduler: bool = True, *,
             "mediaVideo": fp.cameras,
             "mediaAudio": fp.microphones,
             "seed": fp.seed,
+            "fontList": list(fp.fonts) if fp.fonts else [],
+            "webglTable": {},
         })
         saved = dash.save(clone)
         _log_activity(saved["id"], "created", f"duplicated from {src.get('name', pid)}")
@@ -1175,7 +1212,11 @@ def create_app(data_dir: Optional[str] = None, start_scheduler: bool = True, *,
             if not p.get("engine"):
                 p["engine"] = engine_store.get_default_engine()
             last_engine = p.get("engine")
-            ids.append(dash.save(p)["id"])
+            full = to_dashboard_profile(to_engine_profile({**p, "id": "new"}))
+            merged = {**full, **{k: v for k, v in p.items() if v is not None}}
+            if not int(merged.get("seed") or 0):
+                merged["seed"] = full["seed"]
+            ids.append(dash.save(merged)["id"])
         if last_engine:
             engine_store.set_default_engine(last_engine)
         return {"created": len(ids), "ids": ids}

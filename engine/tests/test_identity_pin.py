@@ -46,6 +46,13 @@ def test_cloak_presents_persona_fingerprint(tmp_path):
     assert f["--fingerprint-screen-height"] == str(fp.screen_height)
     assert f["--fingerprint-gpu-renderer"] == fp.webgl_renderer
     assert f["--fingerprint-gpu-vendor"] == fp.webgl_vendor
+    assert f["--fingerprint-platform-version"] == drivers._CH_PLATFORM_VERSION.get(fp.os, "10.0.0")
+    assert f["--fingerprint-brand"] == "Google Chrome"
+    assert f["--fingerprint-brand-version"] == fp.chrome_version
+    assert f["--fingerprint-windows-font-metrics"] == "true"
+    assert f["--fingerprint-sapi-voices"] == "true"
+    assert f["--fingerprint-timezone"] == fp.timezone
+    assert f["--fingerprint-locale"] == fp.locale
 
 
 def test_cloak_seed_is_stable_and_per_profile(tmp_path):

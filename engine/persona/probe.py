@@ -905,6 +905,7 @@ def align_to_reality(profile: Profile, store: ProfileStore,
             "languages": list(fp.languages),
             "locale": fp.locale,
             "timezone": fp.timezone,
+            "fonts": list(fp.fonts),
             "webgl": fp.webgl,
         },
     }

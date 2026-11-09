@@ -47,6 +47,12 @@ class Fingerprint:
     # first seen for this profile, with a signature. Empty until a trust check
     # reads it; see webgl.py.
     webgl: dict = field(default_factory=dict)
+    canvas_mode: str = "Noise"      # "Noise" | "Block" | "Real"
+    webrtc_mode: str = "Altered"    # "Altered" | "Disabled" | "Real"
+    audio_mode: str = "Real"        # "Noise" | "Real" (default "Real" avoids manual-noise penalty)
+    fonts_mode: str = "Masked"      # "Masked" | "Real"
+    webgl_mode: str = "Altered"     # "Altered" | "Real"
+    geo_mode: str = "Allow"         # "Prompt" | "Allow" | "Block"
 
     def to_dict(self) -> dict:
         return asdict(self)
