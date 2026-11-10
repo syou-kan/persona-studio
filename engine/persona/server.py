@@ -770,6 +770,8 @@ def create_app(data_dir: Optional[str] = None, start_scheduler: bool = True, *,
         merged = {**full, **{k: v for k, v in profile.items() if v is not None}}
         if not int(merged.get("seed") or 0):
             merged["seed"] = full["seed"]
+        if not merged.get("fontList"):
+            merged["fontList"] = full["fontList"]
         profile = merged
         _remember_engine(profile)
         saved = dash.save(profile)
@@ -1190,7 +1192,7 @@ def create_app(data_dir: Optional[str] = None, start_scheduler: bool = True, *,
             "mediaVideo": fp.cameras,
             "mediaAudio": fp.microphones,
             "seed": fp.seed,
-            "fontList": list(fp.fonts) if fp.fonts else [],
+            "fontList": list(fp.fonts),
             "webglTable": {},
         })
         saved = dash.save(clone)
@@ -1216,6 +1218,8 @@ def create_app(data_dir: Optional[str] = None, start_scheduler: bool = True, *,
             merged = {**full, **{k: v for k, v in p.items() if v is not None}}
             if not int(merged.get("seed") or 0):
                 merged["seed"] = full["seed"]
+            if not merged.get("fontList"):
+                merged["fontList"] = full["fontList"]
             ids.append(dash.save(merged)["id"])
         if last_engine:
             engine_store.set_default_engine(last_engine)

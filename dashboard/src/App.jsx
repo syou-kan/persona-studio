@@ -2156,13 +2156,16 @@ function BulkModal({ onClose, onCreate, folder, defaultEngine }) {
     const tags = tagStr.split(",").map(s => s.trim()).filter(Boolean);
     const rnd = (arr) => arr[Math.floor(Math.random() * arr.length)];
     const pick = (arr, dflt) => randomize ? rnd(arr) : (dflt ?? arr[0]);
+    const usedSeeds = new Set();
     const list = new Array(n);
     for (let i = 0; i < n; i++) {
       const os = oses[i % oses.length];
       const country = countries[Math.floor(i / oses.length) % countries.length];
       const chrome = rnd(browsers) || "151.0.0.0";
       const locale = COUNTRY_LOCALE[country] || "en-US";
-      const seed = Math.floor(Math.random() * 2147483646) + 1;
+      let seed = Math.floor(Math.random() * 2147483646) + 1;
+      while (usedSeeds.has(seed)) seed = Math.floor(Math.random() * 2147483646) + 1;
+      usedSeeds.add(seed);
       let devProps;
       if (os === "Android") {
         const dev = randomize ? rnd(ANDROID_DEVICES) : ANDROID_DEVICES[0];

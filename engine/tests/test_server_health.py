@@ -100,14 +100,16 @@ def test_collisions_endpoint_and_health_flag(client):
 
 
 def test_duplicate_profile_is_a_distinct_device(client):
-    orig = _make_profile(client, "Origin", folder="Ads", notes="keep me")
+    orig = _make_profile(client, "Origin", folder="Ads", notes="keep me",
+                         webglTable={"MAX_TEXTURE_SIZE": 16384})
     dup = client.post(f"/api/profiles/{orig['id']}/duplicate").json()
 
     assert dup["id"] != orig["id"]
     assert dup["name"] == "Origin copy"
     assert dup["folder"] == "Ads" and dup["notes"] == "keep me"   # settings carried over
     assert dup.get("seed") and dup["seed"] != orig.get("seed")    # fresh fingerprint seed
-
+    assert isinstance(dup.get("fontList"), list) and len(dup["fontList"]) > 0
+    assert dup.get("webglTable") == {}
     # Both now exist, and they must NOT be a fingerprint collision.
     assert len(client.get("/api/profiles").json()) == 2
     groups = client.get("/api/profiles/collisions").json()["groups"]
@@ -201,6 +203,13 @@ def test_create_profile_assigns_and_persists_seed(client):
     persisted = matching[0]
     assert persisted["seed"] == created["seed"]
     assert persisted["fontList"] == created["fontList"]
+
+    # Also verify explicit seed=0 is replaced with a generated non-zero seed
+    r0 = client.post("/api/profiles", json={"name": "ZeroSeed", "os": "Windows", "seed": 0, "fontList": []})
+    assert r0.status_code == 200
+    c0 = r0.json()
+    assert isinstance(c0.get("seed"), int) and c0["seed"] > 0
+    assert isinstance(c0.get("fontList"), list) and len(c0["fontList"]) > 0
 
 
 def test_batch_create_assigns_and_persists_seeds(client):
