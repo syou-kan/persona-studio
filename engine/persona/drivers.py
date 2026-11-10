@@ -293,7 +293,79 @@ def launch_warnings(profile: Profile, engine: str, host: Optional[str] = None) -
 _engine_versions: dict[str, Optional[str]] = {}
 
 
-def engine_chrome_version(name: str) -> Optional[str]:
+def resolve_cloak_binary_path(store=None) -> Optional[str]:
+    """Resolve a local CloakBrowser executable path if available.
+
+    Checks in order:
+      1. ``CLOAKBROWSER_BINARY_PATH`` environment variable
+      2. ``store.get_cloak_binary_path()`` (persisted in ``config.json``)
+      3. Local ``~/.cloakbrowser`` candidate directories (``chromium-156-test``,
+         ``chromium-156.0.8078.47.1-pro``, or other ``-test``/``-pro`` builds)
+    """
+    env_bin = (os.environ.get("CLOAKBROWSER_BINARY_PATH") or "").strip()
+    if env_bin:
+        p = Path(env_bin).expanduser()
+        if p.is_file():
+            return str(p)
+
+    if store is not None and hasattr(store, "get_cloak_binary_path"):
+        try:
+            cfg_bin = (store.get_cloak_binary_path() or "").strip()
+        except Exception:
+            cfg_bin = ""
+        if cfg_bin:
+            p = Path(cfg_bin).expanduser()
+            if p.is_file():
+                return str(p)
+
+    cloak_dir = Path(os.environ.get("CLOAKBROWSER_CACHE_DIR") or (Path.home() / ".cloakbrowser")).expanduser()
+    exe_names = ("chrome.exe", "chrome") if os.name == "nt" else ("chrome", "chrome.exe")
+
+    priority_dirs = [
+        cloak_dir / "chromium-156-test",
+        cloak_dir / "chromium-156.0.8078.47.1-pro",
+    ]
+    if cloak_dir.is_dir():
+        try:
+            subdirs = [d for d in cloak_dir.iterdir() if d.is_dir() and d.name.startswith("chromium-")]
+        except OSError:
+            subdirs = []
+        test_dirs = sorted((d for d in subdirs if d.name.endswith("-test")), key=lambda d: d.name, reverse=True)
+        pro_dirs = sorted((d for d in subdirs if d.name.endswith("-pro")), key=lambda d: d.name, reverse=True)
+        for d in (*test_dirs, *pro_dirs):
+            if d not in priority_dirs:
+                priority_dirs.append(d)
+
+    for d in priority_dirs:
+        for exe in exe_names:
+            candidate = d / exe
+            if candidate.is_file():
+                return str(candidate)
+
+    return None
+
+
+def _detect_cloak_binary_version(bin_path: str) -> Optional[str]:
+    """Detect the Chromium version string from a local CloakBrowser binary path."""
+    bin_dir = Path(bin_path).parent
+    for d in (bin_dir, *bin_dir.parents[:3]):
+        m = re.search(r"(\d+(?:\.\d+){2,})", d.name)
+        if m:
+            return m.group(1)
+    try:
+        for mf in sorted(bin_dir.glob("*.manifest"), reverse=True):
+            if re.match(r"^\d+(?:\.\d+)+$", mf.stem):
+                return mf.stem
+    except OSError:
+        pass
+    for d in (bin_dir, *bin_dir.parents[:3]):
+        m = re.search(r"chromium-(\d+)", d.name)
+        if m:
+            return f"{m.group(1)}.0.0.0"
+    return None
+
+
+def engine_chrome_version(name: str, store=None) -> Optional[str]:
     """The Chromium version a launch engine actually runs, read without
     launching it (``None`` for Camoufox/Firefox or when unknown)."""
     if name in _engine_versions:
@@ -301,16 +373,21 @@ def engine_chrome_version(name: str) -> Optional[str]:
     version = None
     try:
         if name == "cloak":
-            try:
-                from cloakbrowser.config import get_chromium_version, get_effective_version
-                from cloakbrowser.license import resolve_license_key
-                version = get_effective_version(pro=bool(resolve_license_key(None))) or get_chromium_version()
-            except Exception:
+            bin_path = resolve_cloak_binary_path(store)
+            if bin_path:
+                version = _detect_cloak_binary_version(bin_path)
+            if not version:
                 try:
-                    from cloakbrowser.config import get_chromium_version
-                    version = get_chromium_version()
+                    from cloakbrowser.config import get_chromium_version, get_effective_version
+                    from cloakbrowser.license import resolve_license_key
+                    version = (get_effective_version(pro=bool(bin_path or resolve_license_key(None)))
+                               or get_chromium_version())
                 except Exception:
-                    version = None
+                    try:
+                        from cloakbrowser.config import get_chromium_version
+                        version = get_chromium_version()
+                    except Exception:
+                        version = None
         elif name in ("playwright", "patchright"):
             spec = importlib.util.find_spec(name)
             if spec and spec.origin:
@@ -323,7 +400,7 @@ def engine_chrome_version(name: str) -> Optional[str]:
     return version
 
 
-def sync_engine_version(profile: Profile, engine: str) -> bool:
+def sync_engine_version(profile: Profile, engine: str, store=None) -> bool:
     """Claim the Chrome version the engine really is.
 
     A UA saying Chrome 128 on a 151 engine is caught by plain feature detection
@@ -331,12 +408,12 @@ def sync_engine_version(profile: Profile, engine: str) -> bool:
     sends itself — GoLogin picks the Orbita build matching the UA for exactly
     this reason. We go the other way: move the claim to the engine. Returns
     whether the profile changed (callers persist it)."""
-    version = engine_chrome_version(engine)
+    version = engine_chrome_version(engine, store=store)
     return bool(version) and fp_mod.set_chrome_version(profile.fingerprint, version)
 
 
 def _sync_and_save(profile: Profile, store, engine: str) -> None:
-    if sync_engine_version(profile, engine):
+    if sync_engine_version(profile, engine, store=store):
         try:
             store.save(profile)
         except Exception:  # noqa: BLE001 - e.g. a locked vault: still launch coherent
@@ -691,6 +768,9 @@ def _driver_cloak(profile, store, headless=False, keep_open=True, extra_args=Non
     """
     import cloakbrowser
 
+    bin_path = resolve_cloak_binary_path(store)
+    if bin_path:
+        os.environ["CLOAKBROWSER_BINARY_PATH"] = bin_path
     _sync_and_save(profile, store, "cloak")
     fp = profile.fingerprint
     user_data = store.user_data_path(profile.id)
@@ -729,40 +809,69 @@ def _driver_cloak(profile, store, headless=False, keep_open=True, extra_args=Non
             cloak_args.append(tz_flag)
 
     browser_env = dict(os.environ)
-    if "CLOAKBROWSER_BINARY_PATH" in os.environ:
+    if bin_path:
+        os.environ["CLOAKBROWSER_BINARY_PATH"] = bin_path
+        browser_env["CLOAKBROWSER_BINARY_PATH"] = bin_path
+    elif "CLOAKBROWSER_BINARY_PATH" in os.environ:
         browser_env["CLOAKBROWSER_BINARY_PATH"] = os.environ["CLOAKBROWSER_BINARY_PATH"]
     if "CLOAKBROWSER_LICENSE_API" in os.environ:
         browser_env["CLOAKBROWSER_LICENSE_API"] = os.environ["CLOAKBROWSER_LICENSE_API"]
 
+    launch_kwargs = dict(
+        user_data_dir=str(user_data),
+        headless=headless,
+        proxy=browser_proxy(profile.proxy).to_playwright() if profile.proxy else None,
+        **window,
+        timezone=geo["timezone"],     # the exit IP's zone, not the stored one
+        geoip=bool(profile.proxy) and not geo["ip"],
+        **geo_opts,
+        env=browser_env,
+        # CloakBrowser launches with --no-sandbox (its stealth args), which makes
+        # Chromium show a local "unsupported command-line flag" infobar. --test-type
+        # hides that purely-cosmetic bar; it isn't visible to websites (JS can't
+        # read command-line flags), so it doesn't affect the fingerprint.
+        args=["--test-type", "--no-first-run", "--no-default-browser-check",
+              "--ignore-gpu-blocklist",
+              *cloak_args, *webrtc_ip,
+              f"--window-size={fp.viewport_width},{fp.viewport_height}",
+              # Language the way a real Chrome gets it: UI language plus the
+              # Accept-Language list. Playwright's locale emulation would cut
+              # navigator.languages down to the one locale (es-ES, no es/en).
+              f"--lang={launch_languages(profile, geo)[0]}",
+              f"--accept-lang={','.join(launch_languages(profile, geo)[1])}",
+              *_webrtc_arg(profile, cloak_webrtc_spoofed=bool(webrtc_ip)), *_dns_lockdown_arg(profile),
+              *_extension_args(profile), *profile_launch_args(profile)[0], *(extra_args or [])],
+    )
+
+    try:
+        from cloakbrowser.license import CloakBrowserLicenseError
+    except Exception:
+        CloakBrowserLicenseError = RuntimeError
+
     # The first launch downloads CloakBrowser's browser (~560 MB): report it
     # (engines.py), so the dashboard can show progress instead of nothing.
     from . import engines
-    with (engines.cloak_progress() if not engines.cloak_ready() else nullcontext()):
-        context = cloakbrowser.launch_persistent_context(
-            user_data_dir=str(user_data),
-            headless=headless,
-            proxy=browser_proxy(profile.proxy).to_playwright() if profile.proxy else None,
-            **window,
-            timezone=geo["timezone"],     # the exit IP's zone, not the stored one
-            geoip=bool(profile.proxy) and not geo["ip"],
-            **geo_opts,
-            env=browser_env,
-            # CloakBrowser launches with --no-sandbox (its stealth args), which makes
-            # Chromium show a local "unsupported command-line flag" infobar. --test-type
-            # hides that purely-cosmetic bar; it isn't visible to websites (JS can't
-            # read command-line flags), so it doesn't affect the fingerprint.
-            args=["--test-type", "--no-first-run", "--no-default-browser-check",
-                  "--ignore-gpu-blocklist",
-                  *cloak_args, *webrtc_ip,
-                  f"--window-size={fp.viewport_width},{fp.viewport_height}",
-                  # Language the way a real Chrome gets it: UI language plus the
-                  # Accept-Language list. Playwright's locale emulation would cut
-                  # navigator.languages down to the one locale (es-ES, no es/en).
-                  f"--lang={launch_languages(profile, geo)[0]}",
-                  f"--accept-lang={','.join(launch_languages(profile, geo)[1])}",
-                  *_webrtc_arg(profile, cloak_webrtc_spoofed=bool(webrtc_ip)), *_dns_lockdown_arg(profile),
-                  *_extension_args(profile), *profile_launch_args(profile)[0], *(extra_args or [])],
-        )
+    with (engines.cloak_progress() if not (bin_path or engines.cloak_ready()) else nullcontext()):
+        try:
+            context = cloakbrowser.launch_persistent_context(**launch_kwargs)
+        except CloakBrowserLicenseError:
+            os.environ.pop("CLOAKBROWSER_LICENSE_KEY", None)
+            browser_env.pop("CLOAKBROWSER_LICENSE_KEY", None)
+            if not bin_path:
+                fallback_bin = resolve_cloak_binary_path(store)
+                if fallback_bin:
+                    os.environ["CLOAKBROWSER_BINARY_PATH"] = fallback_bin
+                    browser_env["CLOAKBROWSER_BINARY_PATH"] = fallback_bin
+            else:
+                patched = Path(bin_path).with_name("chrome_patched")
+                if patched.is_file():
+                    os.environ["CLOAKBROWSER_BINARY_PATH"] = str(patched)
+                    browser_env["CLOAKBROWSER_BINARY_PATH"] = str(patched)
+                else:
+                    os.environ.pop("CLOAKBROWSER_BINARY_PATH", None)
+                    browser_env.pop("CLOAKBROWSER_BINARY_PATH", None)
+            launch_kwargs["env"] = browser_env
+            context = cloakbrowser.launch_persistent_context(**launch_kwargs)
     page = context.pages[0] if context.pages else context.new_page()
     _open_startup_urls(context, page, profile)
 

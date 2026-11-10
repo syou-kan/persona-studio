@@ -70,6 +70,23 @@ class ProfileStore:
         self.save_config(cfg)
         return name
 
+    def get_cloak_binary_path(self) -> Optional[str]:
+        """Custom local CloakBrowser binary path (persisted), or None."""
+        return self.get_config().get("cloak_binary_path")
+
+    def set_cloak_binary_path(self, path: Optional[str]) -> Optional[str]:
+        cfg = self.get_config()
+        cleaned = path.strip() if isinstance(path, str) else path
+        cleaned = cleaned or None
+        cfg["cloak_binary_path"] = cleaned
+        self.save_config(cfg)
+        try:
+            from . import drivers
+            drivers._engine_versions.pop("cloak", None)
+        except Exception:
+            pass
+        return cleaned
+
     # ---- vault (encrypt-at-rest for secrets) -----------------------------
     # The fields worth encrypting: anything that grants access if leaked. Cookies
     # live in Chromium's own encrypted store, so the one in our plaintext JSON is

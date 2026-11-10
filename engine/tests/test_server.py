@@ -189,3 +189,33 @@ def test_spoofing_modes_roundtrip():
     assert prof2.fingerprint.fonts_mode == "Real"
     assert prof2.fingerprint.webgl_mode == "Real"
     assert prof2.fingerprint.geo_mode == "Block"
+
+
+def test_api_config_exposes_and_updates_cloak_binary_path(tmp_path):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    from persona.server import TOKEN_HEADER, create_app
+
+    app = create_app(data_dir=str(tmp_path), start_scheduler=False)
+    client = TestClient(app, base_url="http://localhost",
+                        headers={TOKEN_HEADER: app.state.api_token})
+
+    r = client.get("/api/config")
+    assert r.status_code == 200
+    data = r.json()
+    assert "cloak_binary_path" in data
+    assert data["cloak_binary_path"] is None
+
+    custom_path = str(tmp_path / "custom-cloak" / "chrome")
+    r = client.put("/api/config", json={"cloak_binary_path": f"  {custom_path}  "})
+    assert r.status_code == 200
+    assert r.json()["cloak_binary_path"] == custom_path
+
+    r = client.get("/api/config")
+    assert r.status_code == 200
+    assert r.json()["cloak_binary_path"] == custom_path
+
+    r = client.put("/api/config", json={"cloak_binary_path": ""})
+    assert r.status_code == 200
+    assert r.json()["cloak_binary_path"] is None

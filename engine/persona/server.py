@@ -668,6 +668,7 @@ def create_app(data_dir: Optional[str] = None, start_scheduler: bool = True, *,
     def get_config():
         return {
             "default_engine": engine_store.get_default_engine(),
+            "cloak_binary_path": engine_store.get_cloak_binary_path(),
             "folders": _folder_list(),
             "root": str(engine_store.root),
             "version": __version__,
@@ -682,6 +683,8 @@ def create_app(data_dir: Optional[str] = None, start_scheduler: bool = True, *,
             if name not in drivers.names():
                 raise HTTPException(400, f"unknown engine '{name}'")
             engine_store.set_default_engine(name)
+        if "cloak_binary_path" in cfg:
+            engine_store.set_cloak_binary_path(cfg.get("cloak_binary_path"))
         keep = cfg.get("history_keep")
         if keep is not None:
             try:
@@ -924,7 +927,7 @@ def create_app(data_dir: Optional[str] = None, start_scheduler: bool = True, *,
             dirty = True
         from .drivers import sync_engine_version
         engine = d.get("engine") or engine_store.get_default_engine()
-        if sync_engine_version(prof, engine):
+        if sync_engine_version(prof, engine, store=engine_store):
             d["browserVersion"] = prof.fingerprint.chrome_version
             d["userAgent"] = prof.fingerprint.user_agent
             dirty = True

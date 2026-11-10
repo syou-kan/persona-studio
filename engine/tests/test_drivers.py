@@ -207,3 +207,87 @@ def test_webrtc_arg_modes():
     p_no_px = _p(country=None)
     p_no_px.fingerprint.webrtc_mode = "Disabled"
     assert "disable_non_proxied_udp" in drivers._webrtc_arg(p_no_px)[0]
+
+
+def test_resolve_cloak_binary_path_precedence_and_candidates(monkeypatch, tmp_path):
+    from pathlib import Path
+    from persona.store import ProfileStore
+
+    monkeypatch.delenv("CLOAKBROWSER_BINARY_PATH", raising=False)
+    monkeypatch.delenv("CLOAKBROWSER_CACHE_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+
+    store = ProfileStore(root=tmp_path / "persona_root")
+
+    # Nothing exists yet -> None
+    assert drivers.resolve_cloak_binary_path(store) is None
+
+    # 3. Candidate directory detection in ~/.cloakbrowser
+    cloak_home = tmp_path / ".cloakbrowser"
+    cand_pro = cloak_home / "chromium-156.0.8078.47.1-pro" / "chrome"
+    cand_pro.parent.mkdir(parents=True)
+    cand_pro.write_text("#!/bin/sh\n")
+    assert drivers.resolve_cloak_binary_path(store) == str(cand_pro)
+
+    # chromium-156-test has higher priority than chromium-156.0.8078.47.1-pro
+    cand_test = cloak_home / "chromium-156-test" / "chrome"
+    cand_test.parent.mkdir(parents=True)
+    cand_test.write_text("#!/bin/sh\n")
+    assert drivers.resolve_cloak_binary_path(store) == str(cand_test)
+
+    # 2. Store config precedence when env var is not set
+    store_bin = tmp_path / "store_chrome"
+    store_bin.write_text("#!/bin/sh\n")
+    store.set_cloak_binary_path(str(store_bin))
+    assert drivers.resolve_cloak_binary_path(store) == str(store_bin)
+
+    # 1. Environment variable CLOAKBROWSER_BINARY_PATH wins over store and local files
+    env_bin = tmp_path / "env_chrome"
+    env_bin.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("CLOAKBROWSER_BINARY_PATH", str(env_bin))
+    assert drivers.resolve_cloak_binary_path(store) == str(env_bin)
+
+
+def test_detect_cloak_binary_version(tmp_path):
+    # Detection from directory name (e.g. chromium-156-test -> 156.0.0.0)
+    test_dir = tmp_path / "chromium-156-test"
+    test_dir.mkdir(parents=True)
+    bin_in_test = test_dir / "chrome"
+    bin_in_test.write_text("")
+    assert drivers._detect_cloak_binary_version(str(bin_in_test)) == "156.0.0.0"
+
+    # Detection from .manifest file (e.g. 156.0.8078.47.manifest -> 156.0.8078.47)
+    (test_dir / "156.0.8078.47.manifest").write_text("")
+    assert drivers._detect_cloak_binary_version(str(bin_in_test)) == "156.0.8078.47"
+
+    # Detection from full version in directory name
+    pro_dir = tmp_path / "chromium-156.0.8078.47.1-pro"
+    pro_dir.mkdir(parents=True)
+    bin_in_pro = pro_dir / "chrome"
+    bin_in_pro.write_text("")
+    assert drivers._detect_cloak_binary_version(str(bin_in_pro)) == "156.0.8078.47.1"
+
+
+def test_store_cloak_binary_path_persists_and_clears_version_cache(tmp_path):
+    from persona.store import ProfileStore
+
+    store = ProfileStore(root=tmp_path)
+    assert store.get_cloak_binary_path() is None
+
+    drivers._engine_versions["cloak"] = "155.0.0.0"
+    res = store.set_cloak_binary_path("  /opt/cloak/chrome  ")
+    assert res == "/opt/cloak/chrome"
+    assert store.get_cloak_binary_path() == "/opt/cloak/chrome"
+    assert store.get_config()["cloak_binary_path"] == "/opt/cloak/chrome"
+    assert "cloak" not in drivers._engine_versions
+
+    # Reloaded store reads persisted config.json
+    reloaded = ProfileStore(root=tmp_path)
+    assert reloaded.get_cloak_binary_path() == "/opt/cloak/chrome"
+
+    # Clearing with empty string resets to None and invalidates cache
+    drivers._engine_versions["cloak"] = "156.0.0.0"
+    assert store.set_cloak_binary_path("   ") is None
+    assert store.get_cloak_binary_path() is None
+    assert store.get_config()["cloak_binary_path"] is None
+    assert "cloak" not in drivers._engine_versions
